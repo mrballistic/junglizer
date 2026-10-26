@@ -1,0 +1,4 @@
+# getjunglizer.com (AllowOverride All in the vhost)
+ErrorDocument 404 /404.html
+# No directory listings for downloads/, img/ or assets/.
+Options -Indexes
