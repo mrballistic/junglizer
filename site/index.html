@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Junglizer · four-bar break instrument for macOS</title>
+<meta name="description" content="Junglizer turns four one-bar breaks into an editable 16-beat jungle phrase. AUv2, VST3 and CLAP for Apple Silicon and Intel Macs. Free 0.9 beta.">
+<meta name="theme-color" content="#171914">
+<link rel="icon" type="image/png" href="img/favicon.png">
+<link rel="apple-touch-icon" href="img/apple-touch-icon.png">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://getjunglizer.com/">
+<meta property="og:title" content="Junglizer">
+<meta property="og:description" content="A four-bar break instrument for macOS. Slice, place, freeze, export MIDI.">
+<meta property="og:image" content="https://getjunglizer.com/img/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<style>
+  :root {
+    --canvas: #171914;
+    --surface: #22251d;
+    --well: #10120f;
+    --edge: #4c513d;
+    --ink: #f4f1de;
+    --muted: #abb29a;
+    --accent: #d3e080;
+    --b1: #ee9757;
+    --b2: #69cdc1;
+    --b3: #97adf1;
+    --b4: #de8bbe;
+    --max: 1120px;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--canvas);
+    color: var(--ink);
+    font: 17px/1.6 ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-underline-offset: 3px; }
+  a:hover { color: var(--ink); }
+  img { max-width: 100%; height: auto; display: block; }
+  code {
+    font: 0.88em ui-monospace, SFMono-Regular, Menlo, monospace;
+    background: var(--well);
+    border: 1px solid var(--edge);
+    border-radius: 3px;
+    padding: 1px 5px;
+    overflow-wrap: anywhere;
+  }
+  .wrap { max-width: var(--max); margin: 0 auto; padding: 0 24px; }
+
+  /* four-bar strip, echoing the player's bar colors */
+  .bars { display: grid; grid-template-columns: repeat(4, 1fr); height: 6px; }
+  .bars span:nth-child(1) { background: var(--b1); }
+  .bars span:nth-child(2) { background: var(--b2); }
+  .bars span:nth-child(3) { background: var(--b3); }
+  .bars span:nth-child(4) { background: var(--b4); }
+
+  header.top { display: flex; justify-content: space-between; align-items: center; padding: 18px 0; font-size: 15px; }
+  header.top .tag { color: var(--muted); }
+  header.top nav { margin-left: auto; }
+  header.top nav a { color: var(--ink); text-decoration: none; margin-left: 22px; }
+  header.top nav a:hover { color: var(--accent); }
+
+  .hero { padding: 56px 0 40px; text-align: center; }
+  .hero h1 { margin: 0 auto; max-width: 760px; }
+  .hero h1 img { width: 100%; }
+  .hero .lede { font-size: clamp(19px, 2.4vw, 24px); line-height: 1.45; max-width: 640px; margin: 28px auto 0; }
+  .hero .sub { color: var(--muted); margin: 12px auto 0; max-width: 600px; }
+  .cta { display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; margin-top: 32px; }
+  .btn {
+    display: inline-block; padding: 12px 22px; border-radius: 4px;
+    font-weight: 600; text-decoration: none; border: 1px solid var(--edge); color: var(--ink);
+  }
+  .btn:hover { border-color: var(--accent); color: var(--ink); }
+  .btn.primary { background: var(--accent); color: var(--well); border-color: var(--accent); }
+  .btn.primary:hover { background: var(--ink); border-color: var(--ink); color: var(--well); }
+
+  .shot { margin: 24px auto 0; max-width: 1040px; }
+  .shot img { border-radius: 10px; }
+  .shot figcaption { color: var(--muted); font-size: 14px; text-align: center; margin-top: 12px; }
+
+  section { padding: 72px 0; border-top: 1px solid var(--surface); }
+  h2 { font-size: clamp(26px, 3.2vw, 34px); line-height: 1.2; margin: 0 0 12px; letter-spacing: -0.01em; }
+  .intro { color: var(--muted); max-width: 640px; margin: 0 0 40px; }
+
+  ol.steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 28px; }
+  ol.steps li { display: grid; grid-template-columns: 56px 1fr; gap: 18px; align-items: start; }
+  ol.steps .n {
+    font: 700 22px/1 ui-monospace, Menlo, monospace; color: var(--well);
+    width: 48px; height: 48px; border-radius: 4px; display: grid; place-items: center;
+  }
+  ol.steps li:nth-child(1) .n { background: var(--b1); }
+  ol.steps li:nth-child(2) .n { background: var(--b2); }
+  ol.steps li:nth-child(3) .n { background: var(--b3); }
+  ol.steps li:nth-child(4) .n { background: var(--b4); }
+  ol.steps li:nth-child(5) .n { background: var(--accent); }
+  ol.steps h3 { margin: 4px 0 4px; font-size: 19px; }
+  ol.steps p { margin: 0; color: var(--muted); max-width: 680px; }
+
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 56px; }
+  .two h3 { font-size: 19px; margin: 0 0 8px; }
+  .two p { color: var(--muted); margin: 0 0 12px; }
+
+  .dl-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; margin-top: 8px; }
+  .dl-card { background: var(--surface); border: 1px solid var(--edge); border-radius: 6px; padding: 22px; }
+  .dl-card h3 { margin: 0 0 2px; font-size: 19px; }
+  .dl-card .arch { color: var(--muted); font-size: 14px; margin: 0 0 16px; }
+  .dl-card ul { list-style: none; margin: 0; padding: 0; }
+  .dl-card li { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 10px 0; border-top: 1px solid var(--edge); }
+  .dl-card li a { font-weight: 600; }
+  .dl-card li span { color: var(--muted); font-size: 14px; text-align: right; }
+
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 16px; }
+  th, td { text-align: left; padding: 12px 12px 12px 0; border-bottom: 1px solid var(--edge); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: 14px; }
+
+  .note {
+    margin-top: 28px; padding: 18px 20px; border-radius: 6px;
+    background: var(--well); border: 1px solid var(--edge); color: var(--muted); font-size: 15px;
+  }
+  .note strong { color: var(--ink); }
+
+  footer { border-top: 1px solid var(--surface); padding: 32px 0 48px; color: var(--muted); font-size: 14px; }
+  footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+
+  @media (max-width: 760px) {
+    body { font-size: 16px; }
+    .wrap { padding: 0 16px; }
+    header.top .tag { display: none; }
+    header.top nav a { margin-left: 16px; }
+    .hero { padding-top: 32px; }
+    section { padding: 52px 0; }
+    .two, .dl-grid { grid-template-columns: 1fr; gap: 32px; }
+    .dl-grid { gap: 16px; }
+    ol.steps li { grid-template-columns: 44px 1fr; gap: 14px; }
+    ol.steps .n { width: 40px; height: 40px; font-size: 18px; }
+    th:nth-child(1), td:nth-child(1) { white-space: nowrap; }
+  }
+</style>
+</head>
+<body>
+<div class="bars" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
+
+<div class="wrap">
+  <header class="top">
+    <span class="tag">0.9 beta · macOS</span>
+    <nav>
+      <a href="#how">How it works</a>
+      <a href="#download">Download</a>
+    </nav>
+  </header>
+</div>
+
+<main>
+  <div class="wrap hero">
+    <h1><picture>
+      <source srcset="img/wordmark.webp" type="image/webp">
+      <img src="img/wordmark.png" width="1400" height="351" alt="Junglizer">
+    </picture></h1>
+    <p class="lede">A four-bar break instrument. Chop four breaks, rearrange them into a 16-beat phrase, and play it in time with your DAW.</p>
+    <p class="sub">AUv2 for Logic Pro, plus VST3 and CLAP. Apple Silicon and Intel. The 174 BPM breaks ship inside the plugin.</p>
+    <div class="cta">
+      <a class="btn primary" href="#download">Download the free beta</a>
+      <a class="btn" href="#how">See how it works</a>
+    </div>
+  </div>
+
+  <figure class="wrap shot">
+    <picture>
+      <source srcset="img/plugin.webp" type="image/webp">
+      <img src="img/plugin.jpg" width="1600" height="1242" alt="The Junglizer editor in Logic Pro: a sliced source break on top, and a four-bar player below filled with colored placements from four breaks.">
+    </picture>
+    <figcaption>Source break on top, the four-bar player below. Each color is a different break.</figcaption>
+  </figure>
+
+  <section id="how">
+    <div class="wrap">
+      <h2>How it works</h2>
+      <p class="intro">You work in two places: the source waveform, where you cut the break, and the player, where you arrange the cuts. Both stay on screen together.</p>
+      <ol class="steps">
+        <li><span class="n">1</span><div>
+          <h3>Slice a break</h3>
+          <p>Pick a source and split it into 1 to 32 slices. Drag the markers to land on the hits. Click a slice to hear it, right-click to mute it, and tag the bass hits that drive the 808.</p>
+        </div></li>
+        <li><span class="n">2</span><div>
+          <h3>Pick a break for each bar</h3>
+          <p>Each of the four bars gets its own break. Until you place anything, the full break plays underneath as a ghost, so the groove never drops out.</p>
+        </div></li>
+        <li><span class="n">3</span><div>
+          <h3>Place slices</h3>
+          <p>Drag slices onto the player grid. Set each one's length, Original or Fit speed, bit depth and retriggers (up to 8×), then lock the ones you want to keep.</p>
+        </div></li>
+        <li><span class="n">4</span><div>
+          <h3>Let it suggest fills</h3>
+          <p>Ask for a fill in any bar, or turn on Live variations to get a new phrase every four bars. Freeze the one you like.</p>
+        </div></li>
+        <li><span class="n">5</span><div>
+          <h3>Thin it out or make it thicc</h3>
+          <p>One crossfader runs from Thin (high-passed) through Dry to Thicc, which layers a decaying 808 on your tagged bass hits at the root you choose. Push it all the way for a sub octave.</p>
+        </div></li>
+      </ol>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap two">
+      <div>
+        <h3>Export the phrase as MIDI</h3>
+        <p>One click writes a four-bar <code>.mid</code> file to <code>~/Music/Junglizer/Exports</code> and shows it in Finder. Drop it on the Junglizer track in Logic and switch the plugin to MIDI region playback. The file includes slice notes, bar sources, and controller data for speed, bit depth, retriggers and tone.</p>
+      </div>
+      <div>
+        <h3>Automate and map everything</h3>
+        <p>Every control is a host automation parameter, so you can draw it in or map it to a hardware controller. Phrases, markers, placements and locks are saved with your project.</p>
+        <p>The plugin follows your host's tempo. Away from 174 BPM, the breaks change speed and pitch to stay on the grid.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="download">
+    <div class="wrap">
+      <h2>Download</h2>
+      <p class="intro">Junglizer 0.9 beta 1 is free. Pick your Mac, then the format your DAW uses. Each zip holds one plugin.</p>
+
+      <div class="dl-grid">
+        <div class="dl-card">
+          <h3>Apple Silicon</h3>
+          <p class="arch">M1 and later · arm64</p>
+          <ul>
+            <li><a href="downloads/Junglizer-v0.9.0-beta.1-arm64-component.zip">AUv2</a><span>Logic Pro, GarageBand</span></li>
+            <li><a href="downloads/Junglizer-v0.9.0-beta.1-arm64-vst3.zip">VST3</a><span>Ableton Live, Cubase, Studio One</span></li>
+            <li><a href="downloads/Junglizer-v0.9.0-beta.1-arm64-clap.zip">CLAP</a><span>Bitwig, Reaper</span></li>
+          </ul>
+        </div>
+        <div class="dl-card">
+          <h3>Intel</h3>
+          <p class="arch">x86_64</p>
+          <ul>
+            <li><a href="downloads/Junglizer-v0.9.0-beta.1-x86_64-component.zip">AUv2</a><span>Logic Pro, GarageBand</span></li>
+            <li><a href="downloads/Junglizer-v0.9.0-beta.1-x86_64-vst3.zip">VST3</a><span>Ableton Live, Cubase, Studio One</span></li>
+            <li><a href="downloads/Junglizer-v0.9.0-beta.1-x86_64-clap.zip">CLAP</a><span>Bitwig, Reaper</span></li>
+          </ul>
+        </div>
+      </div>
+
+      <h3 style="margin:48px 0 0;font-size:19px">Install</h3>
+      <table>
+        <thead><tr><th>Format</th><th>Unzip, then copy the bundle to</th></tr></thead>
+        <tbody>
+          <tr><td>AUv2</td><td><code>~/Library/Audio/Plug-Ins/Components/</code></td></tr>
+          <tr><td>VST3</td><td><code>~/Library/Audio/Plug-Ins/VST3/</code></td></tr>
+          <tr><td>CLAP</td><td><code>~/Library/Audio/Plug-Ins/CLAP/</code></td></tr>
+        </tbody>
+      </table>
+      <p style="color:var(--muted);margin-top:16px">Restart your DAW so it finds the plugin. The breaks are built in, so there's nothing else to install.</p>
+
+      <div class="note">
+        <strong>This is a beta.</strong> Every build is signed and notarized by Apple, so it loads without any security prompts. SHA-256 checksums: <a href="downloads/SHA256-arm64.txt">arm64</a>, <a href="downloads/SHA256-x86_64.txt">Intel</a>. Fit to length currently changes pitch along with speed; pitch-preserving stretch is planned.
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>Junglizer by <a href="https://mrballistic.com">mrballistic</a></span>
+    <span>macOS · AUv2 · VST3 · CLAP</span>
+  </div>
+</footer>
+</body>
+</html>
