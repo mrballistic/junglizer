@@ -24,7 +24,7 @@ Use the [0.9 beta release](https://github.com/mrballistic/junglizer/releases/tag
 | VST3 | `~/Library/Audio/Plug-Ins/VST3/` |
 | CLAP | `~/Library/Audio/Plug-Ins/CLAP/` |
 
-Restart the host to rescan. These beta archives are ad-hoc signed and are not Apple notarized, so macOS may ask you to allow the plugin in Security settings. The release also provides SHA-256 checksums for every archive. No separate sample installation is needed.
+Restart the host to rescan. All six beta archives are signed with a Developer ID Application certificate, notarized by Apple, and include stapled tickets. The release also provides SHA-256 checksums for every archive. No separate sample installation is needed.
 
 ## MIDI export and automation
 
@@ -43,6 +43,6 @@ cargo truce build --au2 --vst3 --clap
 cargo truce validate --auval
 ```
 
-`cargo truce build` stages the format bundles in `target/bundles/`. `cargo truce install --au2 --user --no-build` installs the staged AU for the current user. The [CI and release workflow](.github/workflows/ci-release.yml) tests pushes and pull requests, then builds both Mac architectures and publishes three format archives per architecture from a version tag. This beta retains the current plugin IDs in `truce.toml`; changing them would affect project recall.
+`cargo truce build` stages the format bundles in `target/bundles/`. `cargo truce install --au2 --user --no-build` installs the staged AU for the current user. The [CI and release workflow](.github/workflows/ci-release.yml) tests pushes and pull requests and builds both Mac architectures. A release maintainer signs, notarizes, and staples each format before publishing the downloads; see [release signing](docs/RELEASE-SIGNING.md). This beta retains the current plugin IDs in `truce.toml`; changing them would affect project recall.
 
 The [UI design brief](docs/UI-DESIGN-BRIEF.md), [implemented design system](DESIGN.md), [validation record](docs/UI-REFRESH-VALIDATION.md), and [0.9 release notes](docs/RELEASE-NOTES-0.9.0-beta.1.md) document the current scope and its limits. Nick Collins's *Algorithmic Composition Methods for Breakbeat Science* ([local PDF](docs/acmethodsforbbsci.pdf)) informed the separation of source cuts, placements, and playback. [Livecut](https://github.com/mdsp/Livecut) inspired the first editable fill suggestion; Junglizer uses its own code and deterministic rendering of accepted fills.
