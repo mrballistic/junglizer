@@ -83,6 +83,24 @@
     header.top .brand { width: 140px; }
     main { padding-top: 24px; }
   }
+  .btn {
+    display: inline-block; padding: 12px 22px; border-radius: 4px;
+    font-weight: 600; text-decoration: none; border: 1px solid var(--edge); color: var(--ink);
+  }
+  .btn:hover { border-color: var(--accent); color: var(--ink); }
+  .btn.primary { background: var(--accent); color: var(--well); border-color: var(--accent); }
+  .btn.primary:hover { background: var(--ink); border-color: var(--ink); color: var(--well); }
+  .lost { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 24px 48px; padding-block: 32px 56px; }
+  .lost .kicker { color: var(--accent); font-size: 14px; letter-spacing: 0.04em; text-transform: uppercase; margin: 0 0 12px; }
+  .lost h1 { margin: 0 0 16px; }
+  .lost-copy p { max-width: 520px; }
+  .lost-links { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 28px; }
+  .lost-raver img { display: block; height: min(62vh, 560px); width: auto; }
+  @media (max-width: 720px) {
+    .lost { grid-template-columns: 1fr; padding-block-start: 16px; }
+    .lost-raver { justify-self: center; order: -1; }
+    .lost-raver img { height: 300px; }
+  }
 </style>
 </head>
 <body>
@@ -98,10 +116,19 @@
   </header>
 </div>
 
-<main class="wrap">
-  <h1>Page not found</h1>
-  <p>There’s nothing at this address. It may have moved, or the link may have a typo.</p>
-  <p><a href="/">Go to the Junglizer home page</a> or <a href="/#download">download the beta</a>.</p>
+<main class="wrap lost">
+  <div class="lost-copy">
+    <p class="kicker">404 · page not found</p>
+    <h1>Where was that map point again?</h1>
+    <p>This address leads nowhere. Like a rave line that changed its message at midnight, the page you wanted has moved on, or the link has a typo.</p>
+    <p>The party’s still on, though.</p>
+    <p class="lost-links"><a class="btn primary" href="/#download">Download the free beta</a> <a class="btn" href="/">Back to the home page</a></p>
+  </div>
+  <picture class="lost-raver">
+    <source srcset="/img/raver-404.webp" type="image/webp">
+    <img src="/img/raver-404.png" width="421" height="1200" alt="" decoding="async">
+  </picture>
+</main>
 
 <footer>
   <div class="wrap">
