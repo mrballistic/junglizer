@@ -22,3 +22,6 @@
 !.env.example
 *.swp
 *~
+
+# Release zips pulled by site/deploy.sh
+/site/downloads/
