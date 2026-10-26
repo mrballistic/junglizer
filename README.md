@@ -15,7 +15,8 @@ for Logic Pro, with VST3 and CLAP builds from the same Rust project.
    slices over one or more slots to replace the ghost for that span.
 5. Choose original-speed or pitch-changing varispeed per placement, with
    optional bit crushing and retriggers. Pitch-preserving stretch is planned.
-6. Play the pattern in sync with the host, or export its triggering events as
+6. Play the pattern in sync with Logic. You can ask Junglizer to vary each
+   four-bar pass, freeze the one you like, and export its triggering events as
    MIDI for the Logic timeline.
 
 ## Current state
@@ -29,35 +30,55 @@ drag the slice into the player. Right-click a source slice to mark it quiet or
 active. Placed slices replace the ghost for their span and can play at their
 original speed or fit the span by changing speed and pitch. Each placement has
 bit depth, retrigger, and lock controls. “Suggest / try another” makes an
-editable fill in the selected bar while preserving locked slices. Markers and
-placements are saved in plugin project state.
+editable fill in the selected bar while preserving locked slices. “Evolve every
+four bars” makes new fills while Logic plays; “Freeze this version” keeps the
+exact currently displayed phrase and its bar choices. The player shows a moving
+playhead and highlights the active bar during playback. Markers and placements
+are saved in plugin project state.
+
+The global **Thin ↔ Thicc** control starts dry in the center. The left side
+progressively high-passes the whole player. The right side reinforces bass-hit
+markers with a synthesized, decaying 808 at the selected root in octave 1;
+the far right also adds octave 0. Junglizer guesses bass-hit markers from the
+break's low-frequency onsets. Select a source slice and use **Bass hit → tuned
+808** to correct those guesses.
+
+## MIDI in Logic
+
+Click **Export four-bar MIDI to Finder**. Junglizer writes a `.mid` file under
+`~/Music/Junglizer/Exports` and reveals it in Finder. Drag that file onto the
+Junglizer track in Logic, then choose **Playback: MIDI region** in the plugin.
+The MIDI region contains the four-bar slice notes, bar-source choices, slice
+speed, bit depth, retriggers, length, player-slot count, Thin ↔ Thicc position,
+and 808 root. The ghost break continues underneath empty slots. Editing source
+markers after export can change the sound of the MIDI region, so freeze and
+leave markers as they are when matching an exported phrase matters.
+
+Junglizer exposes its performance and edit controls as Logic automation
+parameters. Assign those parameters to CS12 controls using Logic's MIDI
+controller assignment workflow. The available parameters include the four bar
+sources, Thin ↔ Thicc, root, playback mode, source-slice count, player-slot
+count, selected slot/break/slice, fill bar, slice length/speed/bit
+depth/retriggers/lock, source mute, bass-hit tag, marker position, live
+variations, and momentary Place Slice, Clear Slice, Suggest Fill, Lock Bar,
+Freeze Variation, and Unfreeze actions. For a momentary action,
+send a low-to-high transition and then return it low before triggering again.
+
+The exported file uses channel 1 notes `0..127` for break `0..3` × slice
+`0..31`. CC `20` is speed, `21` bit depth, `22` retriggers, `23` length,
+`24` player-slot count, `25` Thin ↔ Thicc, `26` root, and `30` the ghost
+break for the current bar. These CCs are for reproducible MIDI playback;
+CS12 mapping should target Logic's Junglizer parameters.
 
 At host tempos other than 174 BPM, ghost playback changes speed and pitch to
 stay on the host grid. The source loops are read from this project's `sample/`
 directory at plugin startup. The included breaks are local development inputs;
 `.gitignore` excludes them from source control. Anyone cloning the project must
 supply authorized WAV files with the expected filenames before building. A
-portable sample-loading flow is still needed. MIDI control and drag-to-Logic
-MIDI export, automatic live variations, pitch-preserving stretch, and the
-global Thin to Thicc control are planned, not yet implemented.
-
-## Planned global Thin to Thicc control
-
-A single left-to-right control will affect the entire four-bar player and be
-available to host automation and MIDI control:
-
-- **Thin side:** progressively high-pass the player's output.
-- **Center:** dry player, with neither high-pass nor added 808.
-- **Thicc side:** layer an 808 on bass hits, with the 808 tuned to the track's
-  chosen root note (for example, C1 in a C-key track).
-- **Extra Thicc end:** add the note one octave below those same hits (C0 in
-  that example).
-
-Bass-hit positions should be user-editable source metadata. The trigger plan
-will follow the selected ghost loop or a placed source slice, so rearranging a
-bar rearranges its 808 accents too. Exact trigger detection, 808 sound design,
-and the control curve are still design work; this section records the intended
-behavior, not a working feature.
+portable sample-loading flow is still needed. The current **Fit to length**
+mode changes pitch with speed; pitch-preserving stretch is planned. MIDI export
+uses Finder because the current editor does not support direct file dragging
+from the plugin into Logic.
 
 ## Design references
 

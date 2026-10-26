@@ -1,10 +1,14 @@
 use crate::edit_state::{EditState, StepPlacement};
+use crate::live::CapturedPhrase;
+use crate::midi::export_to_music;
 use crate::sample::StereoSample;
 use crate::suggest::suggest_bar;
 use crate::{JunglizerParams, JunglizerParamsParamId as P, SOURCE_FILES};
 use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, vec2};
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
+use truce::params::FloatParamReadF32;
 use truce::prelude::{PluginContext, StateBinding};
 use truce_egui::EditorUi;
 use truce_egui::widgets::{param_dropdown, param_knob};
@@ -30,6 +34,7 @@ pub struct JunglizerUi {
     dragging_slice: Option<(usize, usize)>,
     dragging_marker: Option<usize>,
     message: &'static str,
+    export_path: Option<PathBuf>,
 }
 
 impl JunglizerUi {
@@ -60,6 +65,7 @@ impl JunglizerUi {
             dragging_slice: None,
             dragging_marker: None,
             message: "Choose a source slice, then click a player slot. You can drag it there too.",
+            export_path: None,
         }
     }
 
@@ -82,7 +88,11 @@ impl JunglizerUi {
         self.selected_slice = self.selected_slice.min(count as usize - 1);
     }
 
-    fn place(&mut self, slot: u8) {
+    fn place(&mut self, slot: u8, context: &PluginContext<JunglizerParams>) {
+        if self.state.get().frozen || self.state.get().live_enabled {
+            self.message = "Unfreeze or turn off live variations before editing the player.";
+            return;
+        }
         let (source_loop, source_slice) = self
             .dragging_slice
             .unwrap_or((self.selected_loop, self.selected_slice));
@@ -106,13 +116,14 @@ impl JunglizerUi {
         self.state.update(|state| placed = state.place(placement));
         if placed {
             self.selected_slot = Some(slot);
+            context.automate(P::EditSlot, f64::from(slot) / 31.0);
             self.message = "Slice placed. Change its length and sound below.";
         } else {
             self.message = "That space contains a locked slice. Unlock it to replace it.";
         }
     }
 
-    fn source_waveform(&mut self, ui: &mut Ui) {
+    fn source_waveform(&mut self, ui: &mut Ui, context: &PluginContext<JunglizerParams>) {
         let width = ui.available_width();
         let (rect, response) = ui.allocate_exact_size(vec2(width, 112.0), Sense::click_and_drag());
         ui.painter()
@@ -152,7 +163,8 @@ impl JunglizerUi {
                     color,
                 );
             }
-            if response.drag_started()
+            if !self.state.get().frozen
+                && response.drag_started()
                 && let Some(pointer) = response.interact_pointer_pos()
             {
                 self.dragging_marker = (1..self.state.get().source_count as usize)
@@ -171,8 +183,14 @@ impl JunglizerUi {
                                     .abs(),
                             )
                     });
+                if let Some(index) = self.dragging_marker {
+                    self.selected_slice = index;
+                    context.automate(P::EditSlice, index as f64 / 31.0);
+                    context.begin_edit(P::MarkerPosition);
+                }
             }
-            if response.dragged()
+            if !self.state.get().frozen
+                && response.dragged()
                 && let (Some(i), Some(pointer)) =
                     (self.dragging_marker, response.interact_pointer_pos())
             {
@@ -195,27 +213,49 @@ impl JunglizerUi {
                             }
                             state.touch();
                         });
+                        context.set_param(P::MarkerPosition, f64::from(frame) / frame_count as f64);
                     }
                 }
             }
             if response.drag_stopped() {
+                if self.dragging_marker.is_some() {
+                    context.end_edit(P::MarkerPosition);
+                }
                 self.dragging_marker = None;
             }
         }
     }
 
-    fn player(&mut self, ui: &mut Ui, context: &PluginContext<JunglizerParams>) {
+    fn player(
+        &mut self,
+        ui: &mut Ui,
+        context: &PluginContext<JunglizerParams>,
+        live: Option<&CapturedPhrase>,
+    ) {
         let width = ui.available_width();
         let (rect, response) = ui.allocate_exact_size(vec2(width, 150.0), Sense::click());
         ui.painter()
             .rect_filled(rect, 5.0, Color32::from_rgb(25, 35, 43));
-        let bar_sources = [
+        let selected_bars = [
             context.params().bar_1.value(),
             context.params().bar_2.value(),
             context.params().bar_3.value(),
             context.params().bar_4.value(),
         ];
-        let slots = self.state.get().player_slots as usize;
+        let bar_sources = if let Some(phrase) = live {
+            phrase.bars.map(|bar| i64::from(bar) + 1)
+        } else if self.state.get().frozen {
+            self.state.get().frozen_bars.map(|bar| i64::from(bar) + 1)
+        } else {
+            selected_bars
+        };
+        let slots =
+            live.map_or(self.state.get().player_slots, |phrase| phrase.player_slots) as usize;
+        let placements = live.map_or(&self.state.get().placements, |phrase| &phrase.placements);
+        let play_beat = context
+            .transport()
+            .filter(|transport| transport.playing)
+            .map(|transport| transport.position_beats.rem_euclid(16.0));
         for bar in 0..4 {
             let bar_rect = Rect::from_min_max(
                 Pos2::new(rect.left() + rect.width() * bar as f32 / 4.0, rect.top()),
@@ -224,6 +264,13 @@ impl JunglizerUi {
                     rect.bottom(),
                 ),
             );
+            if play_beat.is_some_and(|beat| (beat / 4.0).floor() as usize == bar) {
+                ui.painter().rect_filled(
+                    bar_rect,
+                    0.0,
+                    Color32::from_rgba_unmultiplied(245, 174, 75, 25),
+                );
+            }
             ui.painter().rect_stroke(
                 bar_rect,
                 0.0,
@@ -235,7 +282,11 @@ impl JunglizerUi {
                 egui::Align2::LEFT_TOP,
                 format!("BAR {}", bar + 1),
                 egui::FontId::proportional(11.0),
-                MUTED,
+                if play_beat.is_some_and(|beat| (beat / 4.0).floor() as usize == bar) {
+                    ACCENT
+                } else {
+                    MUTED
+                },
             );
             let source = (bar_sources[bar] - 1).clamp(0, 3) as usize;
             for (bin, amplitude) in self.waveform[source].iter().enumerate() {
@@ -257,13 +308,7 @@ impl JunglizerUi {
                 Stroke::new(1.0_f32, Color32::from_gray(48)),
             );
         }
-        for placement in self
-            .state
-            .get()
-            .placements
-            .iter()
-            .filter(|item| item.active)
-        {
+        for placement in placements.iter().filter(|item| item.active) {
             let left = rect.left() + rect.width() * placement.start_slot as f32 / slots as f32;
             let right = rect.left()
                 + rect.width() * (placement.start_slot + placement.span_slots) as f32
@@ -290,6 +335,16 @@ impl JunglizerUi {
                 INK,
             );
         }
+        if let Some(beat) = play_beat {
+            let x = rect.left() + rect.width() * (beat / 16.0) as f32;
+            ui.painter().line_segment(
+                [Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())],
+                Stroke::new(2.0_f32, ACCENT),
+            );
+            ui.painter()
+                .circle_filled(Pos2::new(x, rect.top() + 3.0), 4.0, ACCENT);
+            ui.ctx().request_repaint();
+        }
         if let Some(pointer) = ui.ctx().pointer_latest_pos()
             && rect.contains(pointer)
         {
@@ -297,19 +352,19 @@ impl JunglizerUi {
                 .floor()
                 .clamp(0.0, slots as f32 - 1.0) as u8;
             if response.clicked() {
-                if self
-                    .state
-                    .get()
-                    .placement_at(self.state.get().slot_start(slot) + 0.001)
-                    .is_some()
-                {
+                if placements.iter().any(|item| {
+                    item.active
+                        && item.start_slot <= slot
+                        && slot < item.start_slot + item.span_slots
+                }) {
                     self.selected_slot = Some(slot);
+                    context.automate(P::EditSlot, f64::from(slot) / 31.0);
                 } else {
-                    self.place(slot);
+                    self.place(slot, context);
                 }
             }
             if self.dragging_slice.is_some() && ui.input(|input| input.pointer.any_released()) {
-                self.place(slot);
+                self.place(slot, context);
             }
         }
         if ui.input(|input| input.pointer.any_released()) {
@@ -317,7 +372,7 @@ impl JunglizerUi {
         }
     }
 
-    fn inspector(&mut self, ui: &mut Ui) {
+    fn inspector(&mut self, ui: &mut Ui, context: &PluginContext<JunglizerParams>) {
         let Some(slot) = self.selected_slot else {
             return;
         };
@@ -352,6 +407,7 @@ impl JunglizerUi {
                 .changed()
             {
                 self.edit_placement(current, |item| item.span_slots = span);
+                context.automate(P::EditLength, f64::from(span - 1) / 31.0);
             }
             let mut mode = current.mode;
             egui::ComboBox::from_id_salt("placement-mode")
@@ -366,6 +422,7 @@ impl JunglizerUi {
                 });
             if mode != current.mode {
                 self.edit_placement(current, |item| item.mode = mode);
+                context.automate(P::EditSpeed, f64::from(mode));
             }
         });
         ui.horizontal(|ui| {
@@ -375,6 +432,7 @@ impl JunglizerUi {
                 .changed()
             {
                 self.edit_placement(current, |item| item.bit_depth = bit_depth);
+                context.automate(P::EditBits, f64::from(bit_depth - 1) / 15.0);
             }
             let mut repeats = current.repeats;
             egui::ComboBox::from_id_salt("placement-repeats")
@@ -390,10 +448,12 @@ impl JunglizerUi {
                 });
             if repeats != current.repeats {
                 self.edit_placement(current, |item| item.repeats = repeats);
+                context.automate(P::EditRetriggers, f64::from(repeats.trailing_zeros()) / 3.0);
             }
             let mut locked = current.locked;
             if ui.checkbox(&mut locked, "Lock").changed() {
                 self.edit_placement(current, |item| item.locked = locked);
+                context.automate(P::EditLock, f64::from(locked as u8));
             }
             if ui.button("Remove").clicked() {
                 self.state.update(|state| {
@@ -413,6 +473,65 @@ impl JunglizerUi {
         if !replaced {
             self.message =
                 "That length reaches another slice. Move or remove the neighboring slice first.";
+        }
+    }
+
+    fn freeze_live(&mut self, context: &PluginContext<JunglizerParams>) -> bool {
+        let Some(captured) = context.params().live_snapshot.capture() else {
+            self.message = "Start Logic playback to hear a live variation before freezing it.";
+            return false;
+        };
+        self.state.update(|state| {
+            state.placements = captured.placements;
+            for item in &mut state.placements {
+                if item.active {
+                    item.locked = true;
+                }
+            }
+            state.source_count = captured.source_count;
+            state.player_slots = captured.player_slots;
+            state.frozen_bars = captured.bars;
+            state.live_enabled = false;
+            state.frozen = true;
+            state.touch();
+        });
+        context.automate(P::LiveVariations, 0.0);
+        self.message =
+            "Frozen: this exact four-bar phrase will repeat. Export it as MIDI when ready.";
+        true
+    }
+
+    fn export_midi(&mut self, context: &PluginContext<JunglizerParams>) {
+        if self.state.get().live_enabled && !self.freeze_live(context) {
+            return;
+        }
+        let bars = if self.state.get().frozen {
+            self.state.get().frozen_bars
+        } else {
+            [
+                context.params().bar_1.value() as u8 - 1,
+                context.params().bar_2.value() as u8 - 1,
+                context.params().bar_3.value() as u8 - 1,
+                context.params().bar_4.value() as u8 - 1,
+            ]
+        };
+        match export_to_music(
+            self.state.get(),
+            bars,
+            context.params().thin_thicc.value(),
+            context.params().root.value() as u8,
+        ) {
+            Ok(path) => {
+                let _ = std::process::Command::new("open")
+                    .arg("-R")
+                    .arg(&path)
+                    .spawn();
+                self.export_path = Some(path);
+                self.message = "MIDI is in Finder. Drag it onto Junglizer's Logic track, then switch Playback to MIDI.";
+            }
+            Err(_) => {
+                self.message = "Could not save the MIDI file in Music/Junglizer/Exports.";
+            }
         }
     }
 }
@@ -436,148 +555,353 @@ impl EditorUi<JunglizerParams> for JunglizerUi {
     }
 
     fn ui(&mut self, ui: &mut Ui, context: &PluginContext<JunglizerParams>) {
-        ui.visuals_mut().dark_mode = true;
-        ui.spacing_mut().item_spacing = vec2(9.0, 8.0);
-        ui.heading(egui::RichText::new("JUNGLIZER").color(INK).size(24.0));
-        ui.label(
-            egui::RichText::new("Four bars of break. Choose the source, then remake the rhythm.")
-                .color(MUTED),
+        // Host automation changes the DSP state outside the editor. Keep the
+        // controls and waveform selection in step with that saved state.
+        self.state.sync();
+        self.selected_loop = (context.params().edit_break.value() as usize - 1).min(3);
+        self.selected_slice = (context.params().edit_slice.value() as usize - 1)
+            .min(self.state.get().source_count as usize - 1);
+        self.selected_slot = Some(
+            (context.params().edit_slot.value() as u8 - 1).min(self.state.get().player_slots - 1),
         );
-        ui.separator();
-        ui.horizontal(|ui| {
-            for (index, id) in [P::Bar1, P::Bar2, P::Bar3, P::Bar4].iter().enumerate() {
-                param_dropdown(ui, context, *id, &format!("Bar {} source", index + 1), 2);
-            }
-            param_knob(ui, context, P::Gain, "Output");
-        });
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.strong("SOURCE SLICES");
-            let mut count = self.state.get().source_count;
-            if ui
-                .add(egui::Slider::new(&mut count, 1..=32).text("Slices per loop"))
-                .changed()
-            {
-                self.ensure_markers(count);
-            }
+        self.selected_bar = (context.params().fill_bar.value() as usize - 1).min(3);
+        let live = if self.state.get().live_enabled {
+            context.params().live_snapshot.capture()
+        } else {
+            None
+        };
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            ui.visuals_mut().dark_mode = true;
+            ui.spacing_mut().item_spacing = vec2(9.0, 8.0);
+            ui.heading(egui::RichText::new("JUNGLIZER").color(INK).size(24.0));
             ui.label(
-                egui::RichText::new("Drag the gold lines to start each slice on a sound.")
-                    .color(MUTED),
+                egui::RichText::new(
+                    "Four bars of break. Choose the source, then remake the rhythm.",
+                )
+                .color(MUTED),
             );
-        });
-        ui.horizontal(|ui| {
-            for i in 0..4 {
-                if ui
-                    .selectable_label(self.selected_loop == i, format!("BREAK {}", i + 1))
-                    .clicked()
-                {
-                    self.selected_loop = i;
-                    self.selected_slice = 0;
-                }
-            }
-        });
-        self.source_waveform(ui);
-        ui.horizontal_wrapped(|ui| {
-            let count = self.state.get().source_count as usize;
-            for i in 0..count {
-                let active = self.state.get().slice(self.selected_loop, i).is_some();
-                let label = if active {
-                    format!("{:02}", i + 1)
-                } else {
-                    format!("{:02} ·", i + 1)
-                };
-                let response = ui.add(
-                    egui::Button::new(label)
-                        .selected(self.selected_slice == i)
-                        .sense(Sense::click_and_drag()),
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.add_enabled_ui(!self.state.get().frozen, |ui| {
+                    for (index, id) in [P::Bar1, P::Bar2, P::Bar3, P::Bar4].iter().enumerate() {
+                        param_dropdown(ui, context, *id, &format!("Bar {} source", index + 1), 2);
+                    }
+                });
+                param_knob(ui, context, P::Gain, "Output");
+            });
+            ui.horizontal(|ui| {
+                ui.strong("THIN  ↔  THICC");
+                let mut amount = context.params().thin_thicc.value();
+                let response = ui.add_sized(
+                    [360.0, 22.0],
+                    egui::Slider::new(&mut amount, -1.0..=1.0).show_value(false),
                 );
-                if response.clicked() {
-                    self.selected_slice = i;
-                    context
-                        .params()
-                        .audition
-                        .store((self.selected_loop * 32 + i + 1) as u32, Ordering::Relaxed);
-                }
                 if response.drag_started() {
-                    self.selected_slice = i;
-                    self.dragging_slice = Some((self.selected_loop, i));
+                    context.begin_edit(P::ThinThicc);
                 }
-                if response.secondary_clicked() {
-                    let loop_index = self.selected_loop;
+                if response.changed() {
+                    context.set_param(P::ThinThicc, f64::from((amount + 1.0) * 0.5));
+                }
+                if response.drag_stopped() {
+                    context.end_edit(P::ThinThicc);
+                }
+                if ui.button("Center / dry").clicked() {
+                    context.automate(P::ThinThicc, 0.5);
+                }
+                ui.separator();
+                ui.label("808 key");
+                let root = context.params().root.value() as usize;
+                const KEYS: [&str; 12] = [
+                    "C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B",
+                ];
+                egui::ComboBox::from_id_salt("root-key")
+                    .selected_text(KEYS[root.min(11)])
+                    .show_ui(ui, |ui| {
+                        for (index, name) in KEYS.iter().enumerate() {
+                            if ui.selectable_label(root == index, *name).clicked() {
+                                context.automate(P::Root, index as f64 / 11.0);
+                            }
+                        }
+                    });
+                ui.label(
+                    egui::RichText::new("Thicc adds a tuned 808; far right adds its lower octave.")
+                        .color(MUTED),
+                );
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.strong("SOURCE SLICES");
+                let mut count = self.state.get().source_count;
+                if ui
+                    .add_enabled(
+                        !self.state.get().frozen,
+                        egui::Slider::new(&mut count, 1..=32).text("Slices per loop"),
+                    )
+                    .changed()
+                {
+                    self.ensure_markers(count);
+                    context.automate(P::SourceSlices, f64::from(count - 1) / 31.0);
+                }
+                ui.label(
+                    egui::RichText::new("Drag the gold lines to start each slice on a sound.")
+                        .color(MUTED),
+                );
+            });
+            ui.horizontal(|ui| {
+                for i in 0..4 {
+                    if ui
+                        .selectable_label(self.selected_loop == i, format!("BREAK {}", i + 1))
+                        .clicked()
+                    {
+                        self.selected_loop = i;
+                        self.selected_slice = 0;
+                        context.automate(P::EditBreak, i as f64 / 3.0);
+                        context.automate(P::EditSlice, 0.0);
+                    }
+                }
+            });
+            self.source_waveform(ui, context);
+            ui.horizontal_wrapped(|ui| {
+                let count = self.state.get().source_count as usize;
+                for i in 0..count {
+                    let active = self.state.get().slice(self.selected_loop, i).is_some();
+                    let label = if active {
+                        format!("{:02}", i + 1)
+                    } else {
+                        format!("{:02} ·", i + 1)
+                    };
+                    let response = ui.add(
+                        egui::Button::new(label)
+                            .selected(self.selected_slice == i)
+                            .sense(Sense::click_and_drag()),
+                    );
+                    if response.clicked() {
+                        self.selected_slice = i;
+                        context.automate(P::EditSlice, i as f64 / 31.0);
+                        context
+                            .params()
+                            .audition
+                            .store((self.selected_loop * 32 + i + 1) as u32, Ordering::Relaxed);
+                    }
+                    if response.drag_started() {
+                        self.selected_slice = i;
+                        context.automate(P::EditSlice, i as f64 / 31.0);
+                        self.dragging_slice = Some((self.selected_loop, i));
+                    }
+                    if response.secondary_clicked() && !self.state.get().frozen {
+                        self.selected_slice = i;
+                        context.automate(P::EditSlice, i as f64 / 31.0);
+                        let loop_index = self.selected_loop;
+                        let muted = active;
+                        self.state.update(|state| {
+                            if let Some(set) = state.marker_set_mut(loop_index) {
+                                set.slices[i].active = !set.slices[i].active;
+                                state.touch();
+                            }
+                        });
+                        context.automate(P::SliceMuted, f64::from(muted as u8));
+                    }
+                    response.on_hover_text(if active {
+                        "Click to select, drag into player, or right-click to mute"
+                    } else {
+                        "Quiet slice. Right-click to activate"
+                    });
+                }
+            });
+            ui.horizontal(|ui| {
+                let selected = self.selected_slice;
+                let source = self.selected_loop;
+                let mut bass = self
+                    .state
+                    .get()
+                    .marker_set(source)
+                    .is_some_and(|set| set.valid && set.slices[selected].bass);
+                if ui
+                    .add_enabled(
+                        !self.state.get().frozen,
+                        egui::Checkbox::new(&mut bass, "Bass hit → tuned 808"),
+                    )
+                    .changed()
+                {
                     self.state.update(|state| {
-                        if let Some(set) = state.marker_set_mut(loop_index) {
-                            set.slices[i].active = !set.slices[i].active;
+                        if let Some(set) = state.marker_set_mut(source) {
+                            set.slices[selected].bass = bass;
                             state.touch();
                         }
                     });
+                    context.automate(P::BassHit, f64::from(bass as u8));
                 }
-                response.on_hover_text(if active {
-                    "Click to select, drag into player, or right-click to mute"
-                } else {
-                    "Quiet slice. Right-click to activate"
-                });
-            }
-        });
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.strong("PLAYER");
-            let mut slots = self.state.get().player_slots;
-            if ui
-                .add(egui::Slider::new(&mut slots, 1..=32).text("Even slots across four bars"))
-                .changed()
-            {
-                self.state.update(|state| {
-                    state.set_player_slots(slots);
-                });
-            }
-            ui.label(
-                egui::RichText::new("The original break plays in every empty space.").color(MUTED),
-            );
-        });
-        self.player(ui, context);
-        self.inspector(ui);
-        ui.horizontal(|ui| {
-            ui.strong("SUGGEST A FILL");
-            for bar in 0..4 {
+                ui.label(
+                    egui::RichText::new("Select a source slice to mark its kick.").color(MUTED),
+                );
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.strong("PLAYER");
+                let mut slots = self.state.get().player_slots;
                 if ui
-                    .selectable_label(self.selected_bar == bar, format!("Bar {}", bar + 1))
+                    .add_enabled(
+                        !self.state.get().frozen && !self.state.get().live_enabled,
+                        egui::Slider::new(&mut slots, 1..=32).text("Even slots across four bars"),
+                    )
+                    .changed()
+                {
+                    self.state.update(|state| {
+                        state.set_player_slots(slots);
+                    });
+                    context.automate(P::PlayerSlots, f64::from(slots - 1) / 31.0);
+                }
+                ui.label(
+                    egui::RichText::new("The original break plays in every empty space.")
+                        .color(MUTED),
+                );
+            });
+            self.player(ui, context, live.as_ref());
+            if !self.state.get().frozen && !self.state.get().live_enabled {
+                self.inspector(ui, context);
+            }
+            ui.horizontal(|ui| {
+                ui.strong("SUGGEST A FILL");
+                for bar in 0..4 {
+                    if ui
+                        .selectable_label(self.selected_bar == bar, format!("Bar {}", bar + 1))
+                        .clicked()
+                    {
+                        self.selected_bar = bar;
+                        context.automate(P::FillBar, bar as f64 / 3.0);
+                    }
+                }
+                if ui
+                    .add_enabled(
+                        !self.state.get().live_enabled && !self.state.get().frozen,
+                        egui::Button::new("Suggest / try another"),
+                    )
                     .clicked()
                 {
-                    self.selected_bar = bar;
+                    let bar = self.selected_bar;
+                    let source = self.selected_loop;
+                    let mut count = 0;
+                    self.state
+                        .update(|state| count = suggest_bar(state, bar, source));
+                    self.message = if count > 0 {
+                        "New fill ready. Lock any slices you want to keep, then try another."
+                    } else {
+                        "No source slices are active for this break, or the bar is fully locked."
+                    };
                 }
-            }
-            if ui.button("Suggest / try another").clicked() {
-                let bar = self.selected_bar;
-                let source = self.selected_loop;
-                let mut count = 0;
-                self.state
-                    .update(|state| count = suggest_bar(state, bar, source));
-                self.message = if count > 0 {
-                    "New fill ready. Lock any slices you want to keep, then try another."
-                } else {
-                    "No source slices are active for this break, or the bar is fully locked."
-                };
-            }
-            if ui.button("Lock this bar").clicked() {
-                let bar = self.selected_bar;
-                self.state.update(|state| {
-                    let start = (bar * state.player_slots as usize + 3) / 4;
-                    let end = ((bar + 1) * state.player_slots as usize + 3) / 4;
-                    for item in &mut state.placements {
-                        if item.active
-                            && (item.start_slot as usize) < end
-                            && start < item.start_slot as usize + item.span_slots as usize
-                        {
-                            item.locked = true;
+                if ui
+                    .add_enabled(
+                        !self.state.get().live_enabled && !self.state.get().frozen,
+                        egui::Button::new("Lock this bar"),
+                    )
+                    .clicked()
+                {
+                    let bar = self.selected_bar;
+                    self.state.update(|state| {
+                        let start = (bar * state.player_slots as usize + 3) / 4;
+                        let end = ((bar + 1) * state.player_slots as usize + 3) / 4;
+                        for item in &mut state.placements {
+                            if item.active
+                                && (item.start_slot as usize) < end
+                                && start < item.start_slot as usize + item.span_slots as usize
+                            {
+                                item.locked = true;
+                            }
                         }
-                    }
-                    state.touch();
-                });
-                self.message =
-                    "The bar's placed slices are locked. Future suggestions will keep them.";
+                        state.touch();
+                    });
+                    self.message =
+                        "The bar's placed slices are locked. Future suggestions will keep them.";
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.strong("LIVE VARIATIONS");
+                let live_enabled = self.state.get().live_enabled;
+                if ui
+                    .button(if live_enabled {
+                        "Stop evolving"
+                    } else {
+                        "Evolve every four bars"
+                    })
+                    .clicked()
+                {
+                    self.state.update(|state| {
+                        state.live_enabled = !state.live_enabled;
+                        if state.live_enabled {
+                            state.frozen = false;
+                        }
+                        state.touch();
+                    });
+                    context.automate(P::LiveVariations, f64::from((!live_enabled) as u8));
+                    self.message = if live_enabled {
+                        "Live variations stopped; the hand-edited pattern is back."
+                    } else {
+                        "Live variations are on. Each four-bar pass brings a new fill."
+                    };
+                }
+                if ui
+                    .add_enabled(live_enabled, egui::Button::new("Freeze this version"))
+                    .clicked()
+                {
+                    self.freeze_live(context);
+                }
+                if ui
+                    .add_enabled(
+                        self.state.get().frozen,
+                        egui::Button::new("Unfreeze for editing"),
+                    )
+                    .clicked()
+                {
+                    self.state.update(|state| {
+                        state.frozen = false;
+                        state.touch();
+                    });
+                    self.message = "Editing is unlocked. Existing slices stay in place.";
+                }
+                if let Some(phrase) = live {
+                    ui.label(
+                        egui::RichText::new(format!("Playing variation {}", phrase.cycle + 1))
+                            .color(ACCENT),
+                    );
+                } else if self.state.get().frozen {
+                    ui.label(egui::RichText::new("Frozen phrase").color(ACCENT));
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.strong("LOGIC MIDI");
+                if ui.button("Export four-bar MIDI to Finder").clicked() {
+                    self.export_midi(context);
+                }
+                ui.separator();
+                ui.label("Playback:");
+                let midi_mode = context.params().playback.value() != 0;
+                if ui
+                    .selectable_label(!midi_mode, "Internal pattern")
+                    .clicked()
+                {
+                    context.automate(P::Playback, 0.0);
+                }
+                if ui.selectable_label(midi_mode, "MIDI region").clicked() {
+                    context.automate(P::Playback, 1.0);
+                }
+                ui.label(
+                    egui::RichText::new(
+                        "Switch to MIDI region after dropping the file on this track.",
+                    )
+                    .color(MUTED),
+                );
+            });
+            if let Some(path) = &self.export_path {
+                ui.label(egui::RichText::new(path.display().to_string()).color(MUTED));
             }
+            ui.label(
+                egui::RichText::new(
+                    "CS12: assign Junglizer's Logic automation parameters to your MIDI controls.",
+                )
+                .color(MUTED),
+            );
+            ui.separator();
+            ui.label(egui::RichText::new(self.message).color(ACCENT));
         });
-        ui.separator();
-        ui.label(egui::RichText::new(self.message).color(ACCENT));
     }
 }

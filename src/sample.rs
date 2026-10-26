@@ -58,6 +58,7 @@ impl StereoSample {
                 start: 0,
                 end: self.frames.len() as u32,
                 active: true,
+                bass: true,
             };
             return slices;
         }
@@ -103,10 +104,38 @@ impl StereoSample {
                 start,
                 end: frame_count,
                 active: chosen.is_some(),
+                bass: false,
             };
         }
         for slot in 0..count as usize - 1 {
             slices[slot].end = slices[slot + 1].start.max(slices[slot].start + 1);
+        }
+        // Rank the sound-aligned onsets by low-frequency energy. The user can
+        // correct any guessed kick markers in the source editor.
+        let mut lows = [0.0_f32; MAX_STEPS];
+        let alpha = (2.0 * std::f32::consts::PI * 130.0 / self.sample_rate as f32).min(1.0);
+        for (index, slice) in slices[..count as usize].iter().enumerate() {
+            if !slice.active {
+                continue;
+            }
+            let start = slice.start as usize;
+            let end = (start + (self.sample_rate as usize / 9))
+                .min(slice.end as usize)
+                .min(self.frames.len());
+            let mut low = 0.0_f32;
+            let mut sum = 0.0_f32;
+            for frame in &self.frames[start..end] {
+                low += alpha * ((frame[0] + frame[1]) * 0.5 - low);
+                sum += low * low;
+            }
+            lows[index] = (sum / (end - start).max(1) as f32).sqrt();
+        }
+        let peak = lows[..count as usize]
+            .iter()
+            .copied()
+            .fold(0.0_f32, f32::max);
+        for index in 0..count as usize {
+            slices[index].bass = slices[index].active && lows[index] >= (peak * 0.45).max(0.008);
         }
         slices
     }
@@ -147,6 +176,21 @@ mod tests {
                     assert_eq!(markers[index - 1].end, marker.start);
                 }
             }
+        }
+    }
+
+    #[test]
+    fn every_supplied_break_has_a_bass_hit_at_the_default_slice_count() {
+        for file in super::super::SOURCE_FILES {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("sample")
+                .join(file);
+            let markers = StereoSample::load(&path).unwrap().suggested_slices(8);
+            assert!(
+                markers[..8]
+                    .iter()
+                    .any(|marker| marker.active && marker.bass)
+            );
         }
     }
 }

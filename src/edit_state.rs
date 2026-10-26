@@ -5,15 +5,20 @@ use truce::prelude::StateTrait;
 
 pub const LOOP_COUNT: usize = 4;
 pub const MAX_STEPS: usize = 32;
-const MAGIC: &[u8; 4] = b"JZP1";
-pub const SERIALIZED_LEN: usize =
+const MAGIC_V1: &[u8; 4] = b"JZP1";
+const MAGIC: &[u8; 4] = b"JZP2";
+const SERIALIZED_LEN_V1: usize =
     4 + 2 + 8 + 8 + LOOP_COUNT * MAX_STEPS * (1 + MAX_STEPS * 9) + MAX_STEPS * 9;
+pub const SERIALIZED_LEN: usize =
+    4 + 2 + 8 + 8 + 6 + LOOP_COUNT * MAX_STEPS * (1 + MAX_STEPS * 10) + MAX_STEPS * 9;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SliceMarker {
     pub start: u32,
     pub end: u32,
     pub active: bool,
+    /// Triggers the tuned bass reinforcement at this slice's onset.
+    pub bass: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -38,12 +43,50 @@ pub struct StepPlacement {
     pub locked: bool,
 }
 
+impl StepPlacement {
+    /// Compact representation for the editor's lock-free live preview.
+    pub fn pack(self) -> u32 {
+        let repeat_code = match self.repeats {
+            2 => 1,
+            4 => 2,
+            8 => 3,
+            _ => 0,
+        };
+        u32::from(self.active)
+            | (u32::from(self.start_slot) << 1)
+            | (u32::from(self.span_slots) << 6)
+            | (u32::from(self.source_loop) << 12)
+            | (u32::from(self.source_slice) << 14)
+            | (u32::from(self.mode) << 19)
+            | (u32::from(self.bit_depth) << 20)
+            | (repeat_code << 25)
+            | (u32::from(self.locked) << 27)
+    }
+
+    pub fn unpack(bits: u32) -> Self {
+        Self {
+            active: bits & 1 != 0,
+            start_slot: ((bits >> 1) & 31) as u8,
+            span_slots: ((bits >> 6) & 63) as u8,
+            source_loop: ((bits >> 12) & 3) as u8,
+            source_slice: ((bits >> 14) & 31) as u8,
+            mode: ((bits >> 19) & 1) as u8,
+            bit_depth: ((bits >> 20) & 31) as u8,
+            repeats: 1 << ((bits >> 25) & 3),
+            locked: bits & (1 << 27) != 0,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EditState {
     pub source_count: u8,
     pub player_slots: u8,
     pub markers: [[MarkerSet; MAX_STEPS]; LOOP_COUNT],
     pub placements: [StepPlacement; MAX_STEPS],
+    pub live_enabled: bool,
+    pub frozen: bool,
+    pub frozen_bars: [u8; 4],
     pub seed: u64,
     pub version: u64,
 }
@@ -55,6 +98,9 @@ impl Default for EditState {
             player_slots: 32,
             markers: [[MarkerSet::default(); MAX_STEPS]; LOOP_COUNT],
             placements: [StepPlacement::default(); MAX_STEPS],
+            live_enabled: false,
+            frozen: false,
+            frozen_bars: [0, 1, 2, 3],
             seed: 1,
             version: 1,
         }
@@ -241,6 +287,9 @@ impl StateTrait for EditState {
         buf.push(self.player_slots);
         buf.extend_from_slice(&self.seed.to_le_bytes());
         buf.extend_from_slice(&self.version.to_le_bytes());
+        buf.push(u8::from(self.live_enabled));
+        buf.push(u8::from(self.frozen));
+        buf.extend_from_slice(&self.frozen_bars);
         for loop_sets in &self.markers {
             for set in loop_sets {
                 buf.push(u8::from(set.valid));
@@ -248,6 +297,7 @@ impl StateTrait for EditState {
                     buf.extend_from_slice(&slice.start.to_le_bytes());
                     buf.extend_from_slice(&slice.end.to_le_bytes());
                     buf.push(u8::from(slice.active));
+                    buf.push(u8::from(slice.bass));
                 }
             }
         }
@@ -267,7 +317,8 @@ impl StateTrait for EditState {
     }
 
     fn deserialize(data: &[u8]) -> Option<Self> {
-        if data.len() != SERIALIZED_LEN || &data[..4] != MAGIC {
+        let legacy = data.len() == SERIALIZED_LEN_V1 && &data[..4] == MAGIC_V1;
+        if !legacy && (data.len() != SERIALIZED_LEN || &data[..4] != MAGIC) {
             return None;
         }
         let mut cursor = 4;
@@ -283,6 +334,14 @@ impl StateTrait for EditState {
             version: u64::from_le_bytes(next(8).try_into().ok()?),
             ..Self::default()
         };
+        if !legacy {
+            state.live_enabled = next(1)[0] != 0;
+            state.frozen = next(1)[0] != 0;
+            state.frozen_bars.copy_from_slice(next(4));
+            if state.frozen_bars.iter().any(|&bar| bar > 3) {
+                return None;
+            }
+        }
         if !(1..=MAX_STEPS as u8).contains(&state.source_count)
             || !(1..=MAX_STEPS as u8).contains(&state.player_slots)
         {
@@ -295,6 +354,9 @@ impl StateTrait for EditState {
                     slice.start = u32::from_le_bytes(next(4).try_into().ok()?);
                     slice.end = u32::from_le_bytes(next(4).try_into().ok()?);
                     slice.active = next(1)[0] != 0;
+                    if !legacy {
+                        slice.bass = next(1)[0] != 0;
+                    }
                 }
             }
         }
@@ -359,6 +421,7 @@ mod tests {
                 start: 7,
                 end: 77,
                 active: true,
+                bass: false,
             }; 8],
         );
         state.place(StepPlacement {
@@ -375,6 +438,26 @@ mod tests {
         let bytes = state.serialize();
         assert_eq!(EditState::deserialize(&bytes), Some(state));
         assert!(EditState::deserialize(&bytes[..bytes.len() - 1]).is_none());
+    }
+
+    #[test]
+    fn legacy_pattern_loads_with_new_controls_off() {
+        let mut old = Vec::with_capacity(SERIALIZED_LEN_V1);
+        old.extend_from_slice(MAGIC_V1);
+        old.extend_from_slice(&[8, 32]);
+        old.extend_from_slice(&1_u64.to_le_bytes());
+        old.extend_from_slice(&7_u64.to_le_bytes());
+        for _ in 0..LOOP_COUNT * MAX_STEPS {
+            old.push(0);
+            old.extend_from_slice(&[0_u8; MAX_STEPS * 9]);
+        }
+        old.extend_from_slice(&[0_u8; MAX_STEPS * 9]);
+        assert_eq!(old.len(), SERIALIZED_LEN_V1);
+        let loaded = EditState::deserialize(&old).expect("legacy pattern");
+        assert!(!loaded.live_enabled);
+        assert!(!loaded.frozen);
+        assert_eq!(loaded.source_count, 8);
+        assert_eq!(loaded.version, 7);
     }
 
     #[test]

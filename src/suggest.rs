@@ -29,10 +29,15 @@ pub fn suggest_bar(state: &mut EditState, bar: usize, source_loop: usize) -> usi
             }
         }
     }
-    let choices: Vec<u8> = (0..state.source_count)
-        .filter(|&slice| state.slice(source_loop, slice as usize).is_some())
-        .collect();
-    if choices.is_empty() {
+    let mut choices = [0_u8; 32];
+    let mut choice_count = 0;
+    for slice in 0..state.source_count {
+        if state.slice(source_loop, slice as usize).is_some() {
+            choices[choice_count] = slice;
+            choice_count += 1;
+        }
+    }
+    if choice_count == 0 {
         state.touch();
         return 0;
     }
@@ -66,7 +71,7 @@ pub fn suggest_bar(state: &mut EditState, bar: usize, source_loop: usize) -> usi
             .min()
             .unwrap_or(end);
         let span = preferred.min(end - slot).min(next_occupied - slot).max(1);
-        let slice = choices[(next(&mut seed) as usize) % choices.len()];
+        let slice = choices[(next(&mut seed) as usize) % choice_count];
         let repeats = if slot + span >= end && next(&mut seed) % 3 == 0 {
             4
         } else {
@@ -93,6 +98,17 @@ pub fn suggest_bar(state: &mut EditState, bar: usize, source_loop: usize) -> usi
     added
 }
 
+/// A four-bar variation generated solely from the stored seed, cycle number,
+/// and source choices. This can run once per phrase on the audio thread.
+pub fn variation_for_cycle(base: &EditState, cycle: i64, bar_sources: [usize; 4]) -> EditState {
+    let mut pattern = base.clone();
+    pattern.seed = base.seed ^ (cycle as u64).wrapping_mul(0xd6e8_feb8_6659_fd93);
+    for (bar, source) in bar_sources.into_iter().enumerate() {
+        suggest_bar(&mut pattern, bar, source);
+    }
+    pattern
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,6 +123,7 @@ mod tests {
                 start: 0,
                 end: 100,
                 active: true,
+                bass: true,
             }; 8],
         );
         let locked = StepPlacement {
@@ -129,5 +146,39 @@ mod tests {
         assert!(a.placements.iter().filter(|item| item.active).all(|item| {
             *item == locked || item.start_slot + item.span_slots <= 2 || item.start_slot >= 4
         }));
+    }
+
+    #[test]
+    fn live_variations_change_by_cycle_and_keep_locked_cuts() {
+        let mut base = EditState::default();
+        for source in 0..4 {
+            base.set_markers(
+                source,
+                &[SliceMarker {
+                    start: 0,
+                    end: 100,
+                    active: true,
+                    bass: false,
+                }; 8],
+            );
+        }
+        let locked = StepPlacement {
+            active: true,
+            start_slot: 2,
+            span_slots: 2,
+            source_loop: 0,
+            source_slice: 0,
+            mode: 0,
+            bit_depth: 16,
+            repeats: 1,
+            locked: true,
+        };
+        assert!(base.place(locked));
+        let first = variation_for_cycle(&base, 0, [0, 1, 2, 3]);
+        assert_eq!(first, variation_for_cycle(&base, 0, [0, 1, 2, 3]));
+        assert!(first.placements.contains(&locked));
+        let second = variation_for_cycle(&base, 1, [0, 1, 2, 3]);
+        assert!(second.placements.contains(&locked));
+        assert_ne!(first.placements, second.placements);
     }
 }
