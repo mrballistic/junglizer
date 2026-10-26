@@ -1,0 +1,20 @@
+[vendor]
+name = "Junglizer"
+id = "com.toddgreco"
+url = "https://example.com"
+au_manufacturer = "Jung"
+
+[[plugin]]
+name = "Junglizer"
+bundle_id = "junglizer"
+crate = "junglizer"
+category = "instrument"
+fourcc = "Jung"
+au_tag = "Synthesizer"
+# VST3 secondary subcategory — drives the Cubase plugin submenu.
+# Tighten to your effect kind: "Delay", "Distortion", "Dynamics",
+# "EQ", "Filter", "Mastering", "Modulation", "Pitch Shift",
+# "Reverb", "Surround", "Analyzer", "Spatial". Leave as "Tools" for
+# generic utilities. Without this, Cubase buckets the plugin under
+# "Other".
+vst3_subcategory = "Synth"
