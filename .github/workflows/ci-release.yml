@@ -70,13 +70,14 @@ jobs:
           pattern: bundles-*
           path: dist
           merge-multiple: true
-      - name: Publish beta with six plugin archives
+      - name: Create draft beta with six pre-notarization archives
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           gh release create "$GITHUB_REF_NAME" dist/* \
             --verify-tag \
+            --draft \
             --prerelease \
-            --title "Junglizer 0.9 beta 1" \
-            --notes-file docs/RELEASE-NOTES-0.9.0-beta.1.md
+            --title "Junglizer $GITHUB_REF_NAME" \
+            --notes "Draft build artifacts. Sign, notarize, staple, and replace all archives and checksums before publishing. See docs/RELEASE-SIGNING.md."
