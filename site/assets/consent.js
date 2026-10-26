@@ -74,4 +74,27 @@
     // Reopened on purpose, so move focus into the banner.
     showBanner(true);
   });
+
+  // Downloads: one event per click on a release zip, with the build's version,
+  // architecture and format split out of the file name, so GA can report which
+  // builds people take. Sent only once analytics is loaded (after consent);
+  // gtag queues the hit, so the download itself is never delayed.
+  // File names look like Junglizer-v0.9.0-beta.1-arm64-vst3.zip.
+  const FORMATS = { component: "AUv2", vst3: "VST3", clap: "CLAP" };
+  document.addEventListener("click", (event) => {
+    const link = event.target.closest('a[href*="downloads/"]');
+    if (!link || typeof window.gtag !== "function") return;
+    const file = link.getAttribute("href").split("/").pop();
+    const zip = file.match(/^Junglizer-(v[\w.-]+?)-(arm64|x86_64)-(component|vst3|clap)\.zip$/);
+    if (zip) {
+      window.gtag("event", "junglizer_download", {
+        file_name: file,
+        version: zip[1],
+        arch: zip[2] === "arm64" ? "Apple Silicon" : "Intel",
+        plugin_format: FORMATS[zip[3]],
+      });
+    } else {
+      window.gtag("event", "junglizer_checksum", { file_name: file });
+    }
+  });
 })();
