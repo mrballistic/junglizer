@@ -11,7 +11,16 @@ pub struct StereoSample {
 
 impl StereoSample {
     pub fn load(path: &Path) -> Result<Self, hound::Error> {
-        let mut reader = hound::WavReader::open(path)?;
+        Self::decode(hound::WavReader::open(path)?)
+    }
+
+    pub fn from_bytes(bytes: &'static [u8]) -> Result<Self, hound::Error> {
+        Self::decode(hound::WavReader::new(std::io::Cursor::new(bytes))?)
+    }
+
+    fn decode<R: std::io::Read + std::io::Seek>(
+        mut reader: hound::WavReader<R>,
+    ) -> Result<Self, hound::Error> {
         let spec = reader.spec();
         if spec.channels != 2 || spec.sample_format != hound::SampleFormat::Int {
             return Err(hound::Error::Unsupported);
@@ -147,11 +156,13 @@ mod tests {
 
     #[test]
     fn supplied_breaks_decode_as_nonempty_one_bar_stereo_audio() {
-        for file in super::super::SOURCE_FILES {
+        for (index, file) in super::super::SOURCE_FILES.iter().enumerate() {
             let path = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("sample")
                 .join(file);
             let sample = StereoSample::load(&path).unwrap();
+            let embedded = StereoSample::from_bytes(super::super::SOURCE_AUDIO[index]).unwrap();
+            assert_eq!(embedded.frames, sample.frames);
             // One bar at 174 BPM and 44.1 kHz is about 60,828 frames.
             assert!((60_820..=60_840).contains(&sample.frames.len()));
             assert!(sample.frames.iter().any(|frame| frame[0].abs() > 0.01));

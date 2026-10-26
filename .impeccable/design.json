@@ -1,0 +1,290 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-26T19:07:10.988555+00:00",
+  "title": "Design System: Junglizer",
+  "extensions": {
+    "colorMeta": {
+      "canvas": {
+        "role": "neutral",
+        "displayName": "Canvas",
+        "tonalRamp": [
+          "oklch(15.00% 0.01009 125.05)",
+          "oklch(26.43% 0.01009 125.05)",
+          "oklch(37.86% 0.01009 125.05)",
+          "oklch(49.29% 0.01009 125.05)",
+          "oklch(60.71% 0.01009 125.05)",
+          "oklch(72.14% 0.01009 125.05)",
+          "oklch(83.57% 0.01009 125.05)",
+          "oklch(95.00% 0.01009 125.05)"
+        ]
+      },
+      "surface": {
+        "role": "neutral",
+        "displayName": "Surface",
+        "tonalRamp": [
+          "oklch(15.00% 0.01518 124.19)",
+          "oklch(26.43% 0.01518 124.19)",
+          "oklch(37.86% 0.01518 124.19)",
+          "oklch(49.29% 0.01518 124.19)",
+          "oklch(60.71% 0.01518 124.19)",
+          "oklch(72.14% 0.01518 124.19)",
+          "oklch(83.57% 0.01518 124.19)",
+          "oklch(95.00% 0.01518 124.19)"
+        ]
+      },
+      "well": {
+        "role": "neutral",
+        "displayName": "Well",
+        "tonalRamp": [
+          "oklch(15.00% 0.00683 135.02)",
+          "oklch(26.43% 0.00683 135.02)",
+          "oklch(37.86% 0.00683 135.02)",
+          "oklch(49.29% 0.00683 135.02)",
+          "oklch(60.71% 0.00683 135.02)",
+          "oklch(72.14% 0.00683 135.02)",
+          "oklch(83.57% 0.00683 135.02)",
+          "oklch(95.00% 0.00683 135.02)"
+        ]
+      },
+      "edge": {
+        "role": "neutral",
+        "displayName": "Edge",
+        "tonalRamp": [
+          "oklch(15.00% 0.03242 119.20)",
+          "oklch(26.43% 0.03242 119.20)",
+          "oklch(37.86% 0.03242 119.20)",
+          "oklch(49.29% 0.03242 119.20)",
+          "oklch(60.71% 0.03242 119.20)",
+          "oklch(72.14% 0.03242 119.20)",
+          "oklch(83.57% 0.03242 119.20)",
+          "oklch(95.00% 0.03242 119.20)"
+        ]
+      },
+      "ink": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "tonalRamp": [
+          "oklch(15.00% 0.02525 99.53)",
+          "oklch(26.43% 0.02525 99.53)",
+          "oklch(37.86% 0.02525 99.53)",
+          "oklch(49.29% 0.02525 99.53)",
+          "oklch(60.71% 0.02525 99.53)",
+          "oklch(72.14% 0.02525 99.53)",
+          "oklch(83.57% 0.02525 99.53)",
+          "oklch(95.00% 0.02525 99.53)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Muted",
+        "tonalRamp": [
+          "oklch(15.00% 0.03438 120.46)",
+          "oklch(26.43% 0.03438 120.46)",
+          "oklch(37.86% 0.03438 120.46)",
+          "oklch(49.29% 0.03438 120.46)",
+          "oklch(60.71% 0.03438 120.46)",
+          "oklch(72.14% 0.03438 120.46)",
+          "oklch(83.57% 0.03438 120.46)",
+          "oklch(95.00% 0.03438 120.46)"
+        ]
+      },
+      "accent": {
+        "role": "primary",
+        "displayName": "Accent",
+        "tonalRamp": [
+          "oklch(15.00% 0.12129 115.27)",
+          "oklch(26.43% 0.12129 115.27)",
+          "oklch(37.86% 0.12129 115.27)",
+          "oklch(49.29% 0.12129 115.27)",
+          "oklch(60.71% 0.12129 115.27)",
+          "oklch(72.14% 0.12129 115.27)",
+          "oklch(83.57% 0.12129 115.27)",
+          "oklch(95.00% 0.12129 115.27)"
+        ]
+      },
+      "hover": {
+        "role": "primary",
+        "displayName": "Hover",
+        "tonalRamp": [
+          "oklch(15.00% 0.04165 121.26)",
+          "oklch(26.43% 0.04165 121.26)",
+          "oklch(37.86% 0.04165 121.26)",
+          "oklch(49.29% 0.04165 121.26)",
+          "oklch(60.71% 0.04165 121.26)",
+          "oklch(72.14% 0.04165 121.26)",
+          "oklch(83.57% 0.04165 121.26)",
+          "oklch(95.00% 0.04165 121.26)"
+        ]
+      },
+      "selection": {
+        "role": "primary",
+        "displayName": "Selection",
+        "tonalRamp": [
+          "oklch(15.00% 0.06910 119.53)",
+          "oklch(26.43% 0.06910 119.53)",
+          "oklch(37.86% 0.06910 119.53)",
+          "oklch(49.29% 0.06910 119.53)",
+          "oklch(60.71% 0.06910 119.53)",
+          "oklch(72.14% 0.06910 119.53)",
+          "oklch(83.57% 0.06910 119.53)",
+          "oklch(95.00% 0.06910 119.53)"
+        ]
+      },
+      "break-1": {
+        "role": "secondary",
+        "displayName": "Break 1",
+        "tonalRamp": [
+          "oklch(15.00% 0.13163 55.46)",
+          "oklch(26.43% 0.13163 55.46)",
+          "oklch(37.86% 0.13163 55.46)",
+          "oklch(49.29% 0.13163 55.46)",
+          "oklch(60.71% 0.13163 55.46)",
+          "oklch(72.14% 0.13163 55.46)",
+          "oklch(83.57% 0.13163 55.46)",
+          "oklch(95.00% 0.13163 55.46)"
+        ]
+      },
+      "break-2": {
+        "role": "secondary",
+        "displayName": "Break 2",
+        "tonalRamp": [
+          "oklch(15.00% 0.09595 185.23)",
+          "oklch(26.43% 0.09595 185.23)",
+          "oklch(37.86% 0.09595 185.23)",
+          "oklch(49.29% 0.09595 185.23)",
+          "oklch(60.71% 0.09595 185.23)",
+          "oklch(72.14% 0.09595 185.23)",
+          "oklch(83.57% 0.09595 185.23)",
+          "oklch(95.00% 0.09595 185.23)"
+        ]
+      },
+      "break-3": {
+        "role": "secondary",
+        "displayName": "Break 3",
+        "tonalRamp": [
+          "oklch(15.00% 0.10132 270.10)",
+          "oklch(26.43% 0.10132 270.10)",
+          "oklch(37.86% 0.10132 270.10)",
+          "oklch(49.29% 0.10132 270.10)",
+          "oklch(60.71% 0.10132 270.10)",
+          "oklch(72.14% 0.10132 270.10)",
+          "oklch(83.57% 0.10132 270.10)",
+          "oklch(95.00% 0.10132 270.10)"
+        ]
+      },
+      "break-4": {
+        "role": "secondary",
+        "displayName": "Break 4",
+        "tonalRamp": [
+          "oklch(15.00% 0.11909 342.89)",
+          "oklch(26.43% 0.11909 342.89)",
+          "oklch(37.86% 0.11909 342.89)",
+          "oklch(49.29% 0.11909 342.89)",
+          "oklch(60.71% 0.11909 342.89)",
+          "oklch(72.14% 0.11909 342.89)",
+          "oklch(83.57% 0.11909 342.89)",
+          "oklch(95.00% 0.11909 342.89)"
+        ]
+      },
+      "ghost": {
+        "role": "neutral",
+        "displayName": "Neutral ghost waveform"
+      },
+      "playhead": {
+        "role": "neutral",
+        "displayName": "White playhead"
+      },
+      "active-bar": {
+        "role": "primary",
+        "displayName": "Active bar header"
+      }
+    },
+    "typographyMeta": {
+      "body": {
+        "displayName": "Native proportional",
+        "purpose": "Native egui UI text; no custom font stack."
+      }
+    },
+    "shadows": [],
+    "motion": [],
+    "breakpoints": []
+  },
+  "components": [
+    {
+      "name": "Suggest a fill",
+      "kind": "button",
+      "refersTo": "button",
+      "description": "Illustrative HTML translation for the design panel; runtime is native egui.",
+      "html": "<button class=\"ds-button\">Suggest a fill</button>",
+      "css": ".ds-button {background:#22251D;color:#F4F1DE;border:1px solid #4C513D;border-radius:3px;padding:4px 8px;font:13px sans-serif;min-height:26px;} .ds-button:hover {background:#394027;border-color:#D3E080;} .ds-button:focus-visible {outline:2px solid #D3E080;} .ds-button:active {background:#4B5527;border:2px solid #D3E080;}"
+    },
+    {
+      "name": "Freeze phrase",
+      "kind": "button",
+      "refersTo": "button-hover",
+      "description": "Illustrative HTML translation for the design panel; runtime is native egui.",
+      "html": "<button class=\"ds-button-hover\">Freeze phrase</button>",
+      "css": ".ds-button-hover {background:#394027;color:#F4F1DE;border:1px solid #4C513D;border-radius:3px;padding:4px 8px;font:13px sans-serif;min-height:26px;} .ds-button-hover:hover {background:#394027;border-color:#D3E080;} .ds-button-hover:focus-visible {outline:2px solid #D3E080;} .ds-button-hover:active {background:#4B5527;border:2px solid #D3E080;}"
+    },
+    {
+      "name": "Live variations",
+      "kind": "button",
+      "refersTo": "button-active",
+      "description": "Illustrative HTML translation for the design panel; runtime is native egui.",
+      "html": "<button class=\"ds-button-active\">Live variations</button>",
+      "css": ".ds-button-active {background:#4B5527;color:#F4F1DE;border:1px solid #4C513D;border-radius:3px;padding:4px 8px;font:13px sans-serif;min-height:26px;} .ds-button-active:hover {background:#394027;border-color:#D3E080;} .ds-button-active:focus-visible {outline:2px solid #D3E080;} .ds-button-active:active {background:#4B5527;border:2px solid #D3E080;}"
+    },
+    {
+      "name": "Source slice count",
+      "kind": "input",
+      "description": "Illustrative native DragValue appearance; browser input behavior is not the egui implementation.",
+      "html": "<input class=\"ds-count\" type=\"number\" value=\"16\" min=\"1\" max=\"32\" aria-label=\"Source slices\">",
+      "css": ".ds-count {background:#22251D;color:#F4F1DE;border:1px solid #4C513D;border-radius:3px;padding:4px 8px;font:13px sans-serif;width:48px;min-height:26px;} .ds-count:hover {border-color:#D3E080;background:#394027;} .ds-count:focus-visible {outline:2px solid #D3E080;}"
+    },
+    {
+      "name": "Selected source tile",
+      "kind": "button",
+      "description": "Illustrative Break 1 source pad; native pads divide available width by slice count and add source-specific patterns and bass dots.",
+      "html": "<button class=\"ds-slice\" aria-pressed=\"true\">01</button>",
+      "css": ".ds-slice {background:#EE9757;color:#10120F;border:1.5px solid #D3E080;border-radius:3px;padding:4px;font:13px sans-serif;min-width:26px;height:30px;} .ds-slice:hover {background:#394027;} .ds-slice:focus-visible {outline:2px solid #D3E080;} .ds-slice:active {border-width:2px;}"
+    },
+    {
+      "name": "Footer group",
+      "kind": "custom",
+      "description": "Illustrative one-half footer panel; native editor pairs Placed slice with Phrase at equal widths.",
+      "html": "<section class=\"ds-footer\"><strong>Placed slice</strong><p>Select a placement to edit its length, speed, bit depth and retriggers.</p></section>",
+      "css": ".ds-footer {background:#22251D;color:#F4F1DE;border-radius:4px;padding:10px;min-height:118px;font:13px sans-serif;} .ds-footer p {color:#ABB29A;}"
+    }
+  ],
+  "narrative": {
+    "northStar": "UK jungle sleeve, working sampler",
+    "overview": "The user-supplied 1990s UK jungle sleeve and graffiti idioms inform the approved original JUNGLIZER wordmark, including its J/I cleanup. Olive-black, ivory, and lime give the native instrument its atmosphere. Functional controls remain legible and compact around the source-to-player workflow.\n\nProduct truth lives in [the UI design brief](docs/UI-DESIGN-BRIEF.md). Implemented tokens and interactions live in [src/ui.rs](src/ui.rs); this document captures that implementation rather than the brief's earlier incumbent palette. The later user-supplied [Opus playing-editor reference](docs/comps/Opus/Editor%20%C2%B7%20playing,%20placement%20selected.png) and companion tokens image informed more efficient grouping. The user preferred our original logo. References guide grouping and source identity, not glossy material imitation: this remains flat native egui. The revised grouping received a ship disposition after review of all 13 rendered states, with no required design fixes. Screenshots are deterministic actual-egui fixtures, not Logic captures or human/DAW interaction verification.\n\nOutput is a far-right 66 px rotary control with an adjacent dB readout; the 808 root selector is 88 px wide.\n\nThin/Thicc uses a 280 px chunky crossfader with a recessed rail, ridged ivory cap, and Dry center marks.",
+    "keyCharacteristics": [
+      "Graffiti identity with restrained native controls.",
+      "Source and player visible together at the default size.",
+      "Break identity reinforced by numbers and state outlines."
+    ],
+    "rules": [
+      {
+        "name": "The Identity Rule",
+        "body": "Break colors identify audio sources; selection, locks, and playback also need labels, outlines, or symbols.",
+        "section": "colors"
+      },
+      {
+        "name": "The Host Gesture Rule",
+        "body": "Preserve parameter IDs and `PluginContext` paths: slider drags use `begin_edit` \u2192 `set_param` \u2192 `end_edit`; discrete keyboard/click edits use `automate`. Each UI frame synchronizes state and host-driven selections. Styling must not bypass host automation.",
+        "section": "components"
+      }
+    ],
+    "dos": [
+      "**Do** preserve the approved wordmark and the four numbered break identities.",
+      "**Do** check ghost, selected, muted, locked, live, frozen, stopped, playing, dense, export, and missing-source states in actual egui renders.",
+      "**Do** describe fixture screenshots separately from in-host verification."
+    ],
+    "donts": [
+      "**Don't** add ornamental dashboard cards or decorative hardware panels.",
+      "**Don't** conflate Freeze with placement locks or conceal disabled-action explanations.",
+      "**Don't** treat HTML previews or an HTML detector as validation of this native Rust UI."
+    ]
+  }
+}

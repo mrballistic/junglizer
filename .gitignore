@@ -2,8 +2,6 @@
 # Per-developer build env (signing identities, SDK paths). cargo truce
 # reads this file for [env] values - keep it out of the repo.
 /.cargo/config.toml
-/sample/*
-!/sample/.gitkeep
 
 # Finder and AppleDouble metadata, including files inside docs or samples.
 **/.DS_Store
