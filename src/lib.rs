@@ -84,6 +84,8 @@ pub struct JunglizerParams {
     pub freeze_variation: BoolParam,
     #[param(name = "Unfreeze")]
     pub unfreeze: BoolParam,
+    #[param(name = "Unlock All Slices")]
+    pub unlock_all_slices: BoolParam,
     #[param(name = "Bar 1", range = "discrete(1, 4)", default = 1)]
     pub bar_1: IntParam,
     #[param(name = "Bar 2", range = "discrete(1, 4)", default = 2)]
@@ -133,6 +135,7 @@ struct ControlValues {
     lock_bar: bool,
     freeze: bool,
     unfreeze: bool,
+    unlock_all: bool,
 }
 
 impl ControlValues {
@@ -159,6 +162,7 @@ impl ControlValues {
             lock_bar: params.lock_bar.value(),
             freeze: params.freeze_variation.value(),
             unfreeze: params.unfreeze.value(),
+            unlock_all: params.unlock_all_slices.value(),
         }
     }
 }
@@ -456,26 +460,29 @@ impl Junglizer {
             self.edit.touch();
         }
         if current.freeze && !before.freeze {
-            if self.edit.live_enabled {
-                self.edit.placements = self.live_pattern.placements;
-            }
-            for item in &mut self.edit.placements {
-                if item.active {
-                    item.locked = true;
-                }
-            }
-            self.edit.frozen_bars = if self.edit.live_enabled {
+            let bars = if self.edit.live_enabled {
                 self.live_bars.map(|bar| bar as u8)
             } else {
                 bars.map(|bar| bar as u8)
             };
-            self.edit.live_enabled = false;
-            self.edit.frozen = true;
-            self.edit.touch();
+            let placements = if self.edit.live_enabled {
+                self.live_pattern.placements
+            } else {
+                self.edit.placements
+            };
+            self.edit.freeze_phrase(
+                placements,
+                self.edit.source_count,
+                self.edit.player_slots,
+                bars,
+            );
         }
         if current.unfreeze && !before.unfreeze {
             self.edit.frozen = false;
             self.edit.touch();
+        }
+        if current.unlock_all && !before.unlock_all && !self.edit.frozen {
+            self.edit.unlock_all();
         }
     }
 

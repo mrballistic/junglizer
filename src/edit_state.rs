@@ -277,6 +277,40 @@ impl EditState {
     pub fn touch(&mut self) {
         self.version = self.version.wrapping_add(1);
     }
+
+    /// Hold an exact phrase for repeat playback without changing the user's
+    /// per-slice locks. Freezing and locking serve different purposes.
+    pub fn freeze_phrase(
+        &mut self,
+        placements: [StepPlacement; MAX_STEPS],
+        source_count: u8,
+        player_slots: u8,
+        bars: [u8; 4],
+    ) {
+        self.placements = placements;
+        self.source_count = source_count;
+        self.player_slots = player_slots;
+        self.frozen_bars = bars;
+        self.live_enabled = false;
+        self.frozen = true;
+        self.touch();
+    }
+
+    /// Recovery action for older phrases whose slices were locked by export.
+    pub fn unlock_all(&mut self) {
+        if self
+            .placements
+            .iter()
+            .any(|item| item.active && item.locked)
+        {
+            for item in &mut self.placements {
+                if item.active {
+                    item.locked = false;
+                }
+            }
+            self.touch();
+        }
+    }
 }
 
 impl StateTrait for EditState {
@@ -392,6 +426,42 @@ impl StateTrait for EditState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn freezing_preserves_individual_locks_and_unlock_all_recovers_old_phrases() {
+        let mut state = EditState::default();
+        let unlocked = StepPlacement {
+            active: true,
+            start_slot: 0,
+            span_slots: 1,
+            source_loop: 0,
+            source_slice: 0,
+            mode: 0,
+            bit_depth: 16,
+            repeats: 1,
+            locked: false,
+        };
+        let locked = StepPlacement {
+            start_slot: 1,
+            locked: true,
+            ..unlocked
+        };
+        state.placements[0] = unlocked;
+        state.placements[1] = locked;
+        state.live_enabled = true;
+        state.freeze_phrase(state.placements, 8, 32, [3, 2, 1, 0]);
+        assert!(state.frozen);
+        assert!(!state.live_enabled);
+        assert_eq!(state.frozen_bars, [3, 2, 1, 0]);
+        assert!(!state.placements[0].locked);
+        assert!(state.placements[1].locked);
+
+        state.frozen = false;
+        state.placements[0].locked = true; // Simulate an older exported phrase.
+        state.unlock_all();
+        assert!(!state.placements[0].locked);
+        assert!(!state.placements[1].locked);
+    }
 
     #[test]
     fn placed_slice_overrides_and_returns_to_ghost() {

@@ -351,6 +351,17 @@ impl JunglizerUi {
             let slot = (((pointer.x - rect.left()) / rect.width()) * slots as f32)
                 .floor()
                 .clamp(0.0, slots as f32 - 1.0) as u8;
+            if let Some(item) = placements.iter().find(|item| {
+                item.active && item.start_slot <= slot && slot < item.start_slot + item.span_slots
+            }) {
+                response.clone().on_hover_text(if self.state.get().frozen {
+                    "Phrase frozen. Use Unfreeze for editing beside the player."
+                } else if item.locked {
+                    "This slice is locked against replacement. Select it to change Lock, or use Unlock all slices."
+                } else {
+                    "Click to edit this placed slice."
+                });
+            }
             if response.clicked() {
                 if placements.iter().any(|item| {
                     item.active
@@ -482,18 +493,12 @@ impl JunglizerUi {
             return false;
         };
         self.state.update(|state| {
-            state.placements = captured.placements;
-            for item in &mut state.placements {
-                if item.active {
-                    item.locked = true;
-                }
-            }
-            state.source_count = captured.source_count;
-            state.player_slots = captured.player_slots;
-            state.frozen_bars = captured.bars;
-            state.live_enabled = false;
-            state.frozen = true;
-            state.touch();
+            state.freeze_phrase(
+                captured.placements,
+                captured.source_count,
+                captured.player_slots,
+                captured.bars,
+            );
         });
         context.automate(P::LiveVariations, 0.0);
         self.message =
@@ -527,7 +532,11 @@ impl JunglizerUi {
                     .arg(&path)
                     .spawn();
                 self.export_path = Some(path);
-                self.message = "MIDI is in Finder. Drag it onto Junglizer's Logic track, then switch Playback to MIDI.";
+                self.message = if self.state.get().frozen {
+                    "MIDI is in Finder. This phrase is frozen; use Unfreeze beside the player to edit it."
+                } else {
+                    "MIDI is in Finder. Drag it onto Junglizer's Logic track, then switch Playback to MIDI."
+                };
             }
             Err(_) => {
                 self.message = "Could not save the MIDI file in Music/Junglizer/Exports.";
@@ -756,6 +765,46 @@ impl EditorUi<JunglizerParams> for JunglizerUi {
                         .color(MUTED),
                 );
             });
+            let frozen = self.state.get().frozen;
+            let locked_count = self
+                .state
+                .get()
+                .placements
+                .iter()
+                .filter(|item| item.active && item.locked)
+                .count();
+            if frozen || locked_count > 0 {
+                ui.horizontal(|ui| {
+                    if frozen {
+                        ui.colored_label(ACCENT, "FROZEN PHRASE · editing paused");
+                        if ui.button("Unfreeze for editing").clicked() {
+                            self.state.update(|state| {
+                                state.frozen = false;
+                                state.touch();
+                            });
+                            context.automate(P::LiveVariations, 0.0);
+                            self.message = if locked_count > 0 {
+                                "Phrase unfrozen. Individually locked slices remain locked; use Unlock all slices if needed."
+                            } else {
+                                "Phrase unfrozen. You can edit its slices again."
+                            };
+                        }
+                    } else {
+                        ui.label(format!("{locked_count} individually locked slice(s)"));
+                        if ui
+                            .add_enabled(
+                                !self.state.get().live_enabled,
+                                egui::Button::new("Unlock all slices"),
+                            )
+                            .clicked()
+                        {
+                            self.state.update(|state| state.unlock_all());
+                            context.automate(P::EditLock, 0.0);
+                            self.message = "All placed slices are unlocked and editable.";
+                        }
+                    }
+                });
+            }
             self.player(ui, context, live.as_ref());
             if !self.state.get().frozen && !self.state.get().live_enabled {
                 self.inspector(ui, context);
@@ -844,19 +893,6 @@ impl EditorUi<JunglizerParams> for JunglizerUi {
                     .clicked()
                 {
                     self.freeze_live(context);
-                }
-                if ui
-                    .add_enabled(
-                        self.state.get().frozen,
-                        egui::Button::new("Unfreeze for editing"),
-                    )
-                    .clicked()
-                {
-                    self.state.update(|state| {
-                        state.frozen = false;
-                        state.touch();
-                    });
-                    self.message = "Editing is unlocked. Existing slices stay in place.";
                 }
                 if let Some(phrase) = live {
                     ui.label(

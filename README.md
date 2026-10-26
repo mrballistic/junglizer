@@ -32,7 +32,10 @@ original speed or fit the span by changing speed and pitch. Each placement has
 bit depth, retrigger, and lock controls. “Suggest / try another” makes an
 editable fill in the selected bar while preserving locked slices. “Evolve every
 four bars” makes new fills while Logic plays; “Freeze this version” keeps the
-exact currently displayed phrase and its bar choices. The player shows a moving
+exact currently displayed phrase and its bar choices. Freezing pauses editing
+without changing individual slice locks. If an older export left slices locked,
+choose **Unfreeze for editing**, then **Unlock all slices** beside the player.
+The player shows a moving
 playhead and highlights the active bar during playback. Markers and placements
 are saved in plugin project state.
 
@@ -61,7 +64,7 @@ sources, Thin ↔ Thicc, root, playback mode, source-slice count, player-slot
 count, selected slot/break/slice, fill bar, slice length/speed/bit
 depth/retriggers/lock, source mute, bass-hit tag, marker position, live
 variations, and momentary Place Slice, Clear Slice, Suggest Fill, Lock Bar,
-Freeze Variation, and Unfreeze actions. For a momentary action,
+Freeze Variation, Unfreeze, and Unlock All Slices actions. For a momentary action,
 send a low-to-high transition and then return it low before triggering again.
 
 The exported file uses channel 1 notes `0..127` for break `0..3` × slice
