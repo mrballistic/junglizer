@@ -13,28 +13,33 @@ for Logic Pro, with VST3 and CLAP builds from the same Rust project.
    it plays the full loops in their original order unless replaced.
 4. Choose 1 to 32 equally spaced player slots across the four bars. Drag source
    slices over one or more slots to replace the ghost for that span.
-5. Choose original-speed, pitch-changing varispeed, or pitch-preserving stretch
-   per placement, with optional bit crushing.
+5. Choose original-speed or pitch-changing varispeed per placement, with
+   optional bit crushing and retriggers. Pitch-preserving stretch is planned.
 6. Play the pattern in sync with the host, or export its triggering events as
    MIDI for the Logic timeline.
 
 ## Current state
 
-The first audible AU prototype plays the four supplied 174 BPM, one-bar stereo
-breaks as a host-synced, four-bar ghost arrangement. The `Bar 1` through `Bar 4`
-controls select a loop for each bar; each can choose any of the four loops. The
-default order is 1, 2, 3, 4. The source loops are read from this project's
-`sample/` directory when the plugin starts. At host tempos other than 174 BPM,
-this prototype changes playback speed and pitch to keep the loops on the host
-grid. The player is silent while host transport is stopped.
+The AU plays the four supplied 174 BPM, one-bar stereo breaks as a host-synced,
+four-bar ghost arrangement. `Bar 1` through `Bar 4` choose the source loop for
+each bar. The editor shows a source waveform, hand-adjustable slice markers,
+and a four-bar player with the full ghost waveform behind its evenly spaced
+slots. Click a source slice to audition it, then click an empty player slot or
+drag the slice into the player. Right-click a source slice to mark it quiet or
+active. Placed slices replace the ghost for their span and can play at their
+original speed or fit the span by changing speed and pitch. Each placement has
+bit depth, retrigger, and lock controls. “Suggest / try another” makes an
+editable fill in the selected bar while preserving locked slices. Markers and
+placements are saved in plugin project state.
 
-The pure pattern model also handles independent source/player counts, per-loop
-manual marker sets, overlapping slice replacements, and ghost resumption.
-Those editing features are not connected to the audio engine or editor yet.
-The waveform/player editor, MIDI control and export, pitch-preserving stretch,
-bitcrushing, and pattern state persistence remain to be built. The included
-breaks are local development inputs; `.gitignore` excludes them from source
-control. A portable sample-loading and project-state flow is still needed.
+At host tempos other than 174 BPM, ghost playback changes speed and pitch to
+stay on the host grid. The source loops are read from this project's `sample/`
+directory at plugin startup. The included breaks are local development inputs;
+`.gitignore` excludes them from source control. Anyone cloning the project must
+supply authorized WAV files with the expected filenames before building. A
+portable sample-loading flow is still needed. MIDI control and drag-to-Logic
+MIDI export, automatic live variations, pitch-preserving stretch, and the
+global Thin to Thicc control are planned, not yet implemented.
 
 ## Planned global Thin to Thicc control
 
@@ -62,9 +67,9 @@ repetitions from audio rendering. It also discusses manually constrained source
 offsets, short repeated cuts, and phrase-ending rolls. This informs the model's
 separation of source slices, player placements, and audio playback. Livecut
 ([repository](https://github.com/mdsp/Livecut)) is a related live beat slicer
-influenced by BBCut. Its phrase, block, and fill structure is useful inspiration
-for a later optional suggestion engine. Junglizer currently prioritizes hand
-placement and deterministic playback; it does not use Livecut code.
+influenced by BBCut. Its phrase, block, and fill structure inspired the first
+editable fill suggestion. Junglizer uses its own code and renders each accepted
+suggestion deterministically.
 
 ## Local development
 

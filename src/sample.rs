@@ -1,3 +1,4 @@
+use crate::edit_state::{MAX_STEPS, SliceMarker};
 use std::path::Path;
 
 /// Decoded stereo frames. Files are opened during plugin initialization,
@@ -5,6 +6,7 @@ use std::path::Path;
 #[derive(Default)]
 pub struct StereoSample {
     pub frames: Vec<[f32; 2]>,
+    pub sample_rate: u32,
 }
 
 impl StereoSample {
@@ -20,7 +22,20 @@ impl StereoSample {
             .chunks_exact(2)
             .map(|pair| [pair[0] as f32 / scale, pair[1] as f32 / scale])
             .collect();
-        Ok(Self { frames })
+        Ok(Self {
+            frames,
+            sample_rate: spec.sample_rate,
+        })
+    }
+
+    pub fn at_frame(&self, position: f64, channel: usize) -> f32 {
+        if !position.is_finite() || position < 0.0 || position >= self.frames.len() as f64 {
+            return 0.0;
+        }
+        let first = position.floor() as usize;
+        let second = (first + 1).min(self.frames.len() - 1);
+        let fraction = (position - first as f64) as f32;
+        self.frames[first][channel] * (1.0 - fraction) + self.frames[second][channel] * fraction
     }
 
     /// Linear interpolation at a position in the source bar.
@@ -28,11 +43,72 @@ impl StereoSample {
         if self.frames.is_empty() || !(0.0..4.0).contains(&beat) {
             return 0.0;
         }
-        let position = beat * self.frames.len() as f64 / 4.0;
-        let first = position.floor() as usize;
-        let second = (first + 1).min(self.frames.len() - 1);
-        let fraction = (position - first as f64) as f32;
-        self.frames[first][channel] * (1.0 - fraction) + self.frames[second][channel] * fraction
+        self.at_frame(beat * self.frames.len() as f64 / 4.0, channel)
+    }
+
+    /// Offer sound-aligned starting markers for a new slice count. The user
+    /// can move any marker afterward; a quiet bin becomes an inactive slice.
+    pub fn suggested_slices(&self, count: u8) -> [SliceMarker; MAX_STEPS] {
+        let mut slices = [SliceMarker::default(); MAX_STEPS];
+        if self.frames.is_empty() || !(1..=MAX_STEPS as u8).contains(&count) {
+            return slices;
+        }
+        if count == 1 {
+            slices[0] = SliceMarker {
+                start: 0,
+                end: self.frames.len() as u32,
+                active: true,
+            };
+            return slices;
+        }
+        const HOP: usize = 256;
+        let energies: Vec<f32> = self
+            .frames
+            .chunks(HOP)
+            .map(|window| {
+                window.iter().map(|f| f[0].abs() + f[1].abs()).sum::<f32>()
+                    / (2 * window.len()) as f32
+            })
+            .collect();
+        let novelty: Vec<f32> = (0..energies.len())
+            .map(|i| (energies[i] - energies[i.saturating_sub(2)]).max(0.0))
+            .collect();
+        let max_novelty = novelty.iter().copied().fold(0.0_f32, f32::max);
+        let threshold = (max_novelty * 0.04).max(0.008);
+        let frame_count = self.frames.len() as u32;
+        for slot in 0..count as usize {
+            let bin_start = frame_count as usize * slot / count as usize;
+            let bin_end = frame_count as usize * (slot + 1) / count as usize;
+            let early_end = bin_start + (bin_end - bin_start) * 45 / 100;
+            let mut early = None;
+            let mut strongest = None;
+            for i in (bin_start / HOP).max(2)..(bin_end / HOP).min(novelty.len().saturating_sub(2))
+            {
+                if novelty[i] < threshold
+                    || novelty[i] < novelty[i - 1]
+                    || novelty[i] < novelty[i + 1]
+                {
+                    continue;
+                }
+                if i * HOP < early_end && early.is_none() {
+                    early = Some(i);
+                }
+                if strongest.is_none_or(|prev: usize| novelty[i] > novelty[prev]) {
+                    strongest = Some(i);
+                }
+            }
+            let chosen = early.or(strongest);
+            let start = chosen.map_or(bin_start as u32, |i| (i.saturating_sub(1) * HOP) as u32);
+            slices[slot] = SliceMarker {
+                start,
+                end: frame_count,
+                active: chosen.is_some(),
+            };
+        }
+        for slot in 0..count as usize - 1 {
+            slices[slot].end = slices[slot + 1].start.max(slices[slot].start + 1);
+        }
+        slices
     }
 }
 
@@ -52,6 +128,25 @@ mod tests {
             assert!(sample.frames.iter().any(|frame| frame[0].abs() > 0.01));
             assert!(sample.frames.iter().any(|frame| frame[1].abs() > 0.01));
             assert_eq!(sample.at_beat(4.0, 0), 0.0);
+        }
+    }
+
+    #[test]
+    fn suggested_markers_stay_ordered_and_include_playable_slices() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("sample")
+            .join(super::super::SOURCE_FILES[0]);
+        let sample = StereoSample::load(&path).unwrap();
+        for count in [1, 8, 16, 32] {
+            let markers = sample.suggested_slices(count);
+            assert!(markers[..count as usize].iter().any(|marker| marker.active));
+            for (index, marker) in markers[..count as usize].iter().enumerate() {
+                assert!(marker.start < marker.end);
+                assert!(marker.end <= sample.frames.len() as u32);
+                if index > 0 {
+                    assert_eq!(markers[index - 1].end, marker.start);
+                }
+            }
         }
     }
 }

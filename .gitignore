@@ -5,4 +5,22 @@
 /sample/*
 !/sample/.gitkeep
 
-.DS_Store
+# Finder and AppleDouble metadata, including files inside docs or samples.
+**/.DS_Store
+**/._*
+.AppleDouble
+.LSOverride
+
+# Plugin bundles and local signing/debug output.
+*.component/
+*.vst3/
+*.clap/
+*.aaxplugin/
+*.dSYM/
+
+# Per-developer credentials and scratch settings.
+.env
+.env.*
+!.env.example
+*.swp
+*~
