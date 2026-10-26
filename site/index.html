@@ -14,6 +14,9 @@
 <meta property="og:description" content="A four-bar break instrument for macOS. Slice, place, freeze, export MIDI.">
 <meta property="og:image" content="https://getjunglizer.com/img/og.png">
 <meta name="twitter:card" content="summary_large_image">
+<link rel="stylesheet" href="assets/consent.css">
+<!-- Google Analytics loads only after the visitor accepts; see assets/consent.js -->
+<script src="assets/consent.js" defer></script>
 <style>
   :root {
     --canvas: #171914;
@@ -124,7 +127,9 @@
   .note strong { color: var(--ink); }
 
   footer { border-top: 1px solid var(--surface); padding: 32px 0 48px; color: var(--muted); font-size: 14px; }
-  footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  footer .wrap { display: flex; justify-content: space-between; align-items: center; gap: 8px 16px; flex-wrap: wrap; }
+  footer .legal { display: flex; gap: 20px; align-items: center; }
+  footer .legal a { display: inline-flex; align-items: center; min-height: 44px; }
 
   @media (max-width: 760px) {
     body { font-size: 16px; }
@@ -267,6 +272,10 @@
   <div class="wrap">
     <span>Junglizer by <a href="https://mrballistic.com">mrballistic</a></span>
     <span>macOS · AUv2 · VST3 · CLAP</span>
+    <nav class="legal" aria-label="Legal">
+      <a href="privacy/">Privacy</a>
+      <button type="button" class="consent-open" data-consent-open>Cookie settings</button>
+    </nav>
   </div>
 </footer>
 </body>
