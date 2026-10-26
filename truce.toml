@@ -1,7 +1,7 @@
 [vendor]
 name = "Junglizer"
 id = "com.toddgreco"
-url = "https://example.com"
+url = "https://github.com/mrballistic/junglizer"
 au_manufacturer = "Jung"
 
 [[plugin]]

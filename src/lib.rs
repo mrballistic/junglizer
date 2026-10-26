@@ -12,7 +12,6 @@ mod ui;
 use edit_state::{EditState, StepPlacement};
 use live::LiveSnapshot;
 use sample::StereoSample;
-use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
 use suggest::variation_for_cycle;
 use tone::Tone;
@@ -284,12 +283,17 @@ const SOURCE_FILES: [&str; 4] = [
     "174_AmenBreak_Cut_03.wav",
     "174_AmenBreak_Cut_04.wav",
 ];
+const SOURCE_AUDIO: [&[u8]; 4] = [
+    include_bytes!("../sample/174_AmenBreak_Cut_01_NoStab.wav"),
+    include_bytes!("../sample/174_AmenBreak_Cut_02.wav"),
+    include_bytes!("../sample/174_AmenBreak_Cut_03.wav"),
+    include_bytes!("../sample/174_AmenBreak_Cut_04.wav"),
+];
 
 impl Junglizer {
     fn load_sources() -> Self {
-        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("sample");
         let sources: [StereoSample; 4] = std::array::from_fn(|index| {
-            StereoSample::load(&directory.join(SOURCE_FILES[index])).unwrap_or_default()
+            StereoSample::from_bytes(SOURCE_AUDIO[index]).unwrap_or_default()
         });
         let mut edit = EditState::default();
         for count in 1..=32 {
@@ -854,7 +858,9 @@ impl PluginLogic for Junglizer {
     }
 
     fn editor(params: Arc<JunglizerParams>) -> Box<dyn Editor> {
-        truce_egui::EguiEditor::with_ui(params, (1100, 720), ui::JunglizerUi::new()).into_editor()
+        truce_egui::EguiEditor::with_ui(params, (1100, 720), ui::JunglizerUi::new())
+            .with_visuals(ui::visuals())
+            .into_editor()
     }
 }
 

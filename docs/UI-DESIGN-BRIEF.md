@@ -1,5 +1,7 @@
 # Junglizer UI design brief
 
+**Archive note for 0.9 beta:** This is the original design assignment. The implemented design is recorded in [DESIGN.md](../DESIGN.md), shown in the [editor screenshot](screenshots/editor-playing.png), and reviewed in [UI-REFRESH-VALIDATION.md](UI-REFRESH-VALIDATION.md). The user later authorized publishing the four WAVs; they are now committed and embedded in release binaries. Older implementation notes below describe the pre-refresh editor and should be read as historical context.
+
 ## Assignment
 
 Take one thoughtful design and implementation pass at Junglizer's plugin editor. Make the source-to-player workflow immediately understandable and the controls comfortable to use while a producer listens in Logic. Preserve the working audio engine, project state, MIDI export, and host automation. Deliver a coherent visual system, an implemented UI, and screenshots of the actual editor in its important states.
@@ -55,7 +57,7 @@ Use concise musical language. Distinguish **source slice count** from **player s
 - Start with [`src/ui.rs`](../src/ui.rs): all layout, painted waveforms, markers, player, playhead, inspector, messages, and UI interactions live there.
 - [`src/lib.rs`](../src/lib.rs) declares the 29 host parameters, exposes transport through `PluginContext`, and creates the editor at **1100 × 720 px**. Keep parameter names/IDs and host automation behavior stable unless a change is deliberately migrated.
 - [`src/edit_state.rs`](../src/edit_state.rs) stores marker sets, placements, live/frozen state, and serialization. [`src/live.rs`](../src/live.rs) supplies the displayed live phrase. [`src/sample.rs`](../src/sample.rs) produces onset suggestions and waveform source data. The design pass should avoid DSP or state-format changes unless a specific UI issue requires one.
-- The shipped samples are local and git-ignored. Do not add them to source control, generate image assets from them, or assume a clone contains them.
+- **0.9 beta update:** The four authorized WAVs are committed under `sample/` and embedded in every plugin bundle. Clones and release builds contain the same breaks.
 - There is no committed product/design system document or screenshot baseline yet. Capture the incumbent editor in Logic or the standalone host before committing to a visual direction; document any design tokens you introduce.
 
 ## Acceptance check
