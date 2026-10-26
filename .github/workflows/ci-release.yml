@@ -4,7 +4,11 @@ on:
   push:
     branches: [main]
     tags: ['v*']
+    # The website ships by hand with site/deploy.sh; don't spend macOS
+    # runner minutes building the plugin for a site-only change.
+    paths-ignore: ['site/**']
   pull_request:
+    paths-ignore: ['site/**']
   workflow_dispatch:
 
 permissions:
