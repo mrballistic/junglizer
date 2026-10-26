@@ -1,0 +1,34 @@
+# Junglizer
+
+> Junglizer is a four-bar break instrument plugin for macOS. You chop four breaks, arrange the slices into an editable 16-beat jungle phrase, and play it in time with your DAW. It ships as AUv2 (Logic Pro, GarageBand), VST3 (Ableton Live, Cubase, Studio One) and CLAP (Bitwig, Reaper) for Apple Silicon and Intel Macs. Version 0.9 beta 1 is free.
+
+Junglizer is made by Todd Greco (mrballistic). The 174 BPM breaks ship inside the plugin, so there is nothing else to install. The plugin follows the host’s tempo; away from 174 BPM the breaks change speed and pitch to stay on the grid. It makes no network connections and collects no data. Every build is signed and notarized by Apple.
+
+## Features
+
+- Slice each source break into 1 to 32 slices, drag markers onto the hits, audition, mute and tag bass hits.
+- Pick a different break for each of the four bars; until slices are placed, the full break plays underneath as a ghost.
+- Place slices on the player grid with per-slice length, Original or Fit speed, bit depth, retriggers (up to 8×) and locks.
+- Suggested fills per bar, or Live variations for a new phrase every four bars; freeze the one you like.
+- One crossfader from Thin (high-passed) through Dry to Thicc, which layers a decaying 808 on tagged bass hits, down to a sub octave.
+- Export the phrase as a four-bar MIDI file (slice notes, bar sources and controller data) to ~/Music/Junglizer/Exports.
+- Every control is a host automation parameter; phrases, markers, placements and locks are saved with the project.
+
+## Pages
+
+- [Home](https://getjunglizer.com/): features, how it works, downloads and install steps
+- [Privacy policy](https://getjunglizer.com/privacy/): the plugin collects nothing; the site uses Google Analytics only after consent
+
+## Downloads (0.9 beta 1)
+
+- [Apple Silicon, AUv2](https://getjunglizer.com/downloads/Junglizer-v0.9.0-beta.1-arm64-component.zip)
+- [Apple Silicon, VST3](https://getjunglizer.com/downloads/Junglizer-v0.9.0-beta.1-arm64-vst3.zip)
+- [Apple Silicon, CLAP](https://getjunglizer.com/downloads/Junglizer-v0.9.0-beta.1-arm64-clap.zip)
+- [Intel, AUv2](https://getjunglizer.com/downloads/Junglizer-v0.9.0-beta.1-x86_64-component.zip)
+- [Intel, VST3](https://getjunglizer.com/downloads/Junglizer-v0.9.0-beta.1-x86_64-vst3.zip)
+- [Intel, CLAP](https://getjunglizer.com/downloads/Junglizer-v0.9.0-beta.1-x86_64-clap.zip)
+
+## Optional
+
+- [Algorithmic Composition Methods for Breakbeat Science](https://composerprogrammer.com/research/acmethodsforbbsci.pdf): Nick Collins’s 2001 paper, an inspiration for Junglizer
+- [mrballistic.com](https://mrballistic.com): Todd Greco’s other apps and projects
