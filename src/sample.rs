@@ -37,12 +37,13 @@ impl StereoSample {
         self.frames[first][channel] * (1.0 - fraction) + self.frames[second][channel] * fraction
     }
 
-    /// Linear interpolation at a position in the source bar.
-    pub fn at_beat(&self, beat: f64, channel: usize) -> f32 {
-        if self.frames.is_empty() || !(0.0..4.0).contains(&beat) {
+    /// Linear interpolation at a position in a break `beats` long. The file
+    /// spans the beats exactly, whatever its sample rate.
+    pub fn at_beat(&self, beat: f64, beats: f64, channel: usize) -> f32 {
+        if self.frames.is_empty() || !(beats > 0.0) || !(0.0..beats).contains(&beat) {
             return 0.0;
         }
-        self.at_frame(beat * self.frames.len() as f64 / 4.0, channel)
+        self.at_frame(beat * self.frames.len() as f64 / beats, channel)
     }
 
     /// Offer sound-aligned starting markers for a new slice count. The user
@@ -157,7 +158,7 @@ mod tests {
             assert!((60_820..=60_840).contains(&sample.frames.len()));
             assert!(sample.frames.iter().any(|frame| frame[0].abs() > 0.01));
             assert!(sample.frames.iter().any(|frame| frame[1].abs() > 0.01));
-            assert_eq!(sample.at_beat(4.0, 0), 0.0);
+            assert_eq!(sample.at_beat(4.0, 4.0, 0), 0.0);
         }
     }
 

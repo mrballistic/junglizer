@@ -2,6 +2,7 @@ use truce::prelude::*;
 
 mod decode;
 pub mod edit_state;
+mod library;
 mod live;
 mod midi;
 pub mod pattern;
@@ -11,7 +12,8 @@ pub mod tempo;
 mod tone;
 mod ui;
 
-use edit_state::{EditState, SlotKind, StepPlacement};
+use edit_state::{EditState, LOOP_COUNT, SlotKind, StepPlacement};
+use library::LoadedBreak;
 use live::LiveSnapshot;
 use sample::StereoSample;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -99,7 +101,7 @@ pub struct JunglizerParams {
 
 #[derive(Default)]
 pub struct Junglizer {
-    sources: [StereoSample; 4],
+    sources: [Option<Arc<LoadedBreak>>; LOOP_COUNT],
     edit: EditState,
     live_pattern: EditState,
     live_version: u64,
@@ -294,15 +296,25 @@ const SOURCE_AUDIO: [&[u8]; 4] = [
 
 impl Junglizer {
     fn load_sources() -> Self {
-        let sources: [StereoSample; 4] = std::array::from_fn(|index| {
-            StereoSample::from_bytes(SOURCE_AUDIO[index]).unwrap_or_default()
+        let sources: [Option<Arc<LoadedBreak>>; LOOP_COUNT] = std::array::from_fn(|index| {
+            let sample = StereoSample::from_bytes(SOURCE_AUDIO[index]).ok()?;
+            let reading = tempo::Reading {
+                beats: 4,
+                bpm: 174.0,
+            };
+            Some(Arc::new(LoadedBreak::new(sample, 0, reading)))
         });
         let mut edit = EditState::default();
-        for count in 1..=32 {
-            for (index, source) in sources.iter().enumerate() {
+        for (index, source) in sources.iter().enumerate() {
+            let Some(source) = source else { continue };
+            for count in 1..=32 {
                 edit.markers[index][count as usize - 1] = edit_state::MarkerSet {
                     valid: true,
-                    slices: source.suggested_slices(count),
+                    slices: if count == 8 {
+                        source.suggested
+                    } else {
+                        source.sample.suggested_slices(count)
+                    },
                 };
             }
         }
@@ -332,7 +344,7 @@ impl Junglizer {
         {
             let loop_index = current.source_loop as usize;
             self.edit.set_slice_count(loop_index, current.source_slices);
-            let frames = self.sources[loop_index].frames.len() as u32;
+            let frames = self.source_frames(loop_index);
             self.edit.fill_even_markers(loop_index, frames);
         }
         if previous.is_some_and(|before| current.player_slots != before.player_slots)
@@ -370,7 +382,7 @@ impl Junglizer {
         {
             let loop_index = current.source_loop as usize;
             let index = current.source_slice as usize;
-            let frames = self.sources[loop_index].frames.len() as u32;
+            let frames = self.source_frames(loop_index);
             let source_count = self.edit.slice_count(loop_index) as usize;
             if let Some(set) = self.edit.marker_set_mut(loop_index) {
                 let min = set.slices[index - 1].start.saturating_add(1);
@@ -489,6 +501,64 @@ impl Junglizer {
         }
     }
 
+    /// Frame count of a slot's break: the loaded audio's, or the linked
+    /// file's while its audio is missing.
+    fn source_frames(&self, slot: usize) -> u32 {
+        match self.sources.get(slot).and_then(Option::as_deref) {
+            Some(source) if !source.sample.frames.is_empty() => source.sample.frames.len() as u32,
+            _ => self.edit.slots.get(slot).map_or(0, |entry| entry.frames),
+        }
+    }
+
+    /// The audio of a slot that can sound: loaded, non-empty and not blank.
+    fn playable_source(&self, pattern: &EditState, slot: usize) -> Option<&LoadedBreak> {
+        let entry = pattern.slots.get(slot)?;
+        if entry.kind == SlotKind::Blank || entry.beats == 0 {
+            return None;
+        }
+        self.sources
+            .get(slot)?
+            .as_deref()
+            .filter(|source| !source.sample.frames.is_empty())
+    }
+
+    fn playable(&self, pattern: &EditState, slot: usize) -> bool {
+        self.playable_source(pattern, slot).is_some()
+    }
+
+    /// The slot a bar's ghost plays: the bar's own slot if it can sound,
+    /// otherwise the lowest slot that can.
+    fn ghost_source(&self, pattern: &EditState, bar_slot: usize) -> Option<usize> {
+        if self.playable(pattern, bar_slot) {
+            return Some(bar_slot);
+        }
+        (0..LOOP_COUNT).find(|&slot| self.playable(pattern, slot))
+    }
+
+    /// Phrase positions (0..16) where a ghost break plays `source_beat`: once
+    /// per repeat of a break `beats` long. Allocation-free.
+    fn ghost_onsets(source_beat: f64, beats: f64) -> impl Iterator<Item = f64> {
+        // Breaks are at least 4 beats, so 16 repeats always cover the phrase.
+        (0..16_u32)
+            .map(move |repeat| source_beat + f64::from(repeat) * beats)
+            .take_while(move |&onset| beats > 0.0 && (0.0..16.0).contains(&onset))
+    }
+
+    /// The ghost loop at phrase beat `beat` (0..16). A break repeats every
+    /// `beats` beats from the top of the phrase.
+    fn ghost_frame(&self, pattern: &EditState, beat: f64, bar_loops: &[usize; 4]) -> [f32; 2] {
+        let bar = ((beat / 4.0) as usize).min(3);
+        let Some(slot) = self.ghost_source(pattern, bar_loops[bar].min(3)) else {
+            return [0.0; 2];
+        };
+        let Some(source) = self.playable_source(pattern, slot) else {
+            return [0.0; 2];
+        };
+        let beats = f64::from(pattern.slots[slot].beats);
+        let source_beat = beat.rem_euclid(beats);
+        [0, 1].map(|ch| source.sample.at_beat(source_beat, beats, ch))
+    }
+
     fn slice_frame(
         &self,
         pattern: &EditState,
@@ -497,9 +567,10 @@ impl Junglizer {
         tempo: f64,
         player_slots: u8,
     ) -> [f32; 2] {
-        let Some(source) = self.sources.get(placement.source_loop as usize) else {
+        let Some(source) = self.playable_source(pattern, placement.source_loop as usize) else {
             return [0.0; 2];
         };
+        let source = &source.sample;
         let Some(slice) = pattern.slice(
             placement.source_loop as usize,
             placement.source_slice as usize,
@@ -539,13 +610,7 @@ impl Junglizer {
         tempo: f64,
         bar_loops: &[usize; 4],
     ) -> [f32; 2] {
-        let bar = (beat / 4.0) as usize;
-        let source = bar_loops[bar].min(3);
-        let beat_in_bar = beat - bar as f64 * 4.0;
-        let ghost = [
-            self.sources[source].at_beat(beat_in_bar, 0),
-            self.sources[source].at_beat(beat_in_bar, 1),
-        ];
+        let ghost = self.ghost_frame(pattern, beat, bar_loops);
         let Some(placement) = pattern.placement_at(beat) else {
             return ghost;
         };
@@ -570,13 +635,7 @@ impl Junglizer {
     }
 
     fn midi_frame(&self, beat: f64, tempo: f64) -> [f32; 2] {
-        let bar = (beat / 4.0) as usize;
-        let source = self.midi.bars[bar].min(3);
-        let beat_in_bar = beat - bar as f64 * 4.0;
-        let ghost = [
-            self.sources[source].at_beat(beat_in_bar, 0),
-            self.sources[source].at_beat(beat_in_bar, 1),
-        ];
+        let ghost = self.ghost_frame(&self.edit, beat, &self.midi.bars);
         let Some(voice) = self.midi.voice else {
             return ghost;
         };
@@ -619,9 +678,10 @@ impl Junglizer {
         };
         if include_placements {
             for item in pattern.placements.iter().filter(|item| item.active) {
-                if !pattern
-                    .slice(item.source_loop as usize, item.source_slice as usize)
-                    .is_some_and(|slice| slice.bass)
+                if !self.playable(pattern, item.source_loop as usize)
+                    || !pattern
+                        .slice(item.source_loop as usize, item.source_slice as usize)
+                        .is_some_and(|slice| slice.bass)
                 {
                     continue;
                 }
@@ -635,23 +695,32 @@ impl Junglizer {
             }
         }
         for bar in 0..4 {
-            let source_index = bars[bar].min(3);
-            let frame_count = self.sources[source_index].frames.len();
+            let Some(source_index) = self.ghost_source(pattern, bars[bar].min(3)) else {
+                continue;
+            };
+            let frame_count = self
+                .playable_source(pattern, source_index)
+                .map_or(0, |source| source.sample.frames.len());
             if frame_count == 0 {
                 continue;
             }
+            let beats = f64::from(pattern.slots[source_index].beats);
+            let bar_start = bar as f64 * 4.0;
             if let Some(set) = pattern.marker_set(source_index) {
                 for marker in set.slices[..pattern.slice_count(source_index) as usize]
                     .iter()
                     .filter(|marker| marker.active && marker.bass)
                 {
-                    let onset =
-                        bar as f64 * 4.0 + 4.0 * f64::from(marker.start) / frame_count as f64;
-                    if crosses(onset)
-                        && (!include_placements || pattern.placement_at(onset).is_none())
-                        && (include_placements || self.midi.voice.is_none())
+                    let source_beat = beats * f64::from(marker.start) / frame_count as f64;
+                    for onset in Self::ghost_onsets(source_beat, beats)
+                        .filter(|&onset| (bar_start..bar_start + 4.0).contains(&onset))
                     {
-                        return true;
+                        if crosses(onset)
+                            && (!include_placements || pattern.placement_at(onset).is_none())
+                            && (include_placements || self.midi.voice.is_none())
+                        {
+                            return true;
+                        }
                     }
                 }
             }
@@ -794,7 +863,8 @@ impl PluginLogic for Junglizer {
                 };
             }
             if let Some(mut preview) = state.audition {
-                if let Some(source) = state.sources.get(preview.source_loop) {
+                if let Some(source) = state.playable_source(&state.edit, preview.source_loop) {
+                    let source = &source.sample;
                     if preview.position < preview.end as f64 {
                         frame[0] += source.at_frame(preview.position, 0);
                         frame[1] += source.at_frame(preview.position, 1);
@@ -882,12 +952,146 @@ mod audio_tests {
     use super::*;
     use crate::edit_state::SliceMarker;
 
+    fn ramp(frames: usize, rate: u32) -> Option<Arc<LoadedBreak>> {
+        let s = StereoSample {
+            frames: (0..frames).map(|i| [i as f32 / frames as f32; 2]).collect(),
+            sample_rate: rate,
+        };
+        Some(Arc::new(LoadedBreak::new(s, 1, tempo::reading_for(4, 1.0))))
+    }
+
+    #[test]
+    fn eight_beat_break_ghost_plays_twice_across_the_phrase() {
+        let mut st = Junglizer::default();
+        st.sources[0] = ramp(8_000, 44_100);
+        st.edit
+            .load_user(
+                0,
+                "/a.wav",
+                8_000,
+                8,
+                &[SliceMarker {
+                    start: 0,
+                    end: 8_000,
+                    active: true,
+                    bass: false,
+                }; 8],
+            )
+            .unwrap();
+        let bars = [0; 4];
+        let at = |b| st.frame_at_beat(&st.edit, b, 174.0, &bars)[0];
+        assert!((at(1.0) - at(9.0)).abs() < 1e-6);
+        assert!((at(5.0) - 0.625).abs() < 0.01);
+    }
+
+    #[test]
+    fn thirty_two_beat_break_plays_its_first_sixteen_beats() {
+        let mut st = Junglizer::default();
+        st.sources[0] = ramp(32_000, 44_100);
+        st.edit
+            .load_user(
+                0,
+                "/a.wav",
+                32_000,
+                32,
+                &[SliceMarker {
+                    start: 0,
+                    end: 32_000,
+                    active: true,
+                    bass: false,
+                }; 8],
+            )
+            .unwrap();
+        assert!((st.frame_at_beat(&st.edit, 15.0, 174.0, &[0; 4])[0] - 15.0 / 32.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn blank_or_missing_bar_plays_lowest_loaded_slot() {
+        let mut st = Junglizer::default();
+        st.sources = [None, None, ramp(4_000, 44_100), None]; // 0 missing (no audio), 1 and 3 blank
+        st.edit.unload(1);
+        st.edit.unload(3);
+        assert_eq!(st.ghost_source(&st.edit, 1), Some(2));
+        assert_eq!(st.ghost_source(&st.edit, 0), Some(2));
+        st.sources[2] = None;
+        assert_eq!(st.ghost_source(&st.edit, 0), None);
+        assert_eq!(st.frame_at_beat(&st.edit, 3.0, 174.0, &[0; 4]), [0.0; 2]);
+    }
+
+    #[test]
+    fn ghost_bass_onsets_repeat_with_the_break_length() {
+        let onsets: Vec<f64> = Junglizer::ghost_onsets(1.0, 8.0).collect();
+        assert_eq!(onsets, vec![1.0, 9.0]);
+        assert_eq!(Junglizer::ghost_onsets(17.0, 32.0).count(), 0);
+    }
+
+    #[test]
+    fn ghost_follows_beats_not_sample_rate() {
+        let mut st = Junglizer::default();
+        st.sources[0] = ramp(96_000, 96_000);
+        st.edit
+            .load_user(
+                0,
+                "/a.wav",
+                96_000,
+                4,
+                &[SliceMarker {
+                    start: 0,
+                    end: 96_000,
+                    active: true,
+                    bass: false,
+                }; 8],
+            )
+            .unwrap();
+        assert!((st.frame_at_beat(&st.edit, 2.0, 120.0, &[0; 4])[0] - 0.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn original_speed_slice_uses_file_rate_not_host_rate() {
+        // One beat at 120 BPM is 0.5 s: 24,000 frames of a 48 kHz file, whatever the host rate.
+        let mut st = Junglizer::default();
+        st.sources[0] = ramp(96_000, 48_000);
+        st.edit
+            .load_user(
+                0,
+                "/a.wav",
+                96_000,
+                4,
+                &[SliceMarker {
+                    start: 0,
+                    end: 96_000,
+                    active: true,
+                    bass: false,
+                }; 1],
+            )
+            .unwrap();
+        let p = StepPlacement {
+            active: true,
+            start_slot: 0,
+            span_slots: 32,
+            source_loop: 0,
+            source_slice: 0,
+            mode: 0,
+            bit_depth: 16,
+            repeats: 1,
+            locked: false,
+        };
+        assert!((st.slice_frame(&st.edit, &p, 1.0, 120.0, 32)[0] - 0.25).abs() < 0.01);
+    }
+
     #[test]
     fn ghost_player_routes_each_bar_and_stops_with_transport() {
         let mut state = Junglizer {
-            sources: std::array::from_fn(|index| StereoSample {
-                frames: vec![[(index + 1) as f32 * 0.1; 2]],
-                sample_rate: 44_100,
+            sources: std::array::from_fn(|index| {
+                let sample = StereoSample {
+                    frames: vec![[(index + 1) as f32 * 0.1; 2]],
+                    sample_rate: 44_100,
+                };
+                Some(Arc::new(LoadedBreak::new(
+                    sample,
+                    0,
+                    tempo::reading_for(4, 1.0),
+                )))
             }),
             edit: EditState::default(),
             ..Junglizer::default()
@@ -928,7 +1132,12 @@ mod audio_tests {
     fn source_slices_sets_the_selected_slot_and_fills_even_markers() {
         use truce::params::Params;
         let mut state = Junglizer::load_sources();
-        let frames = state.sources[1].frames.len() as u32;
+        let frames = state.sources[1]
+            .as_ref()
+            .expect("built-in break")
+            .sample
+            .frames
+            .len() as u32;
         let marks = [0_u32, 1, 2, 3].map(|i| SliceMarker {
             start: frames * i / 4,
             end: frames * (i + 1) / 4,
@@ -956,9 +1165,16 @@ mod audio_tests {
     #[test]
     fn placed_slice_overrides_ghost_then_ghost_resumes() {
         let mut state = Junglizer {
-            sources: std::array::from_fn(|index| StereoSample {
-                frames: vec![[if index == 0 { 0.2 } else { 0.8 }; 2]; 100],
-                sample_rate: 100,
+            sources: std::array::from_fn(|index| {
+                let sample = StereoSample {
+                    frames: vec![[if index == 0 { 0.2 } else { 0.8 }; 2]; 100],
+                    sample_rate: 100,
+                };
+                Some(Arc::new(LoadedBreak::new(
+                    sample,
+                    0,
+                    tempo::reading_for(4, 1.0),
+                )))
             }),
             edit: EditState::default(),
             ..Junglizer::default()
