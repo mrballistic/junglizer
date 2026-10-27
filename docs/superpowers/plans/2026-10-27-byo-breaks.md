@@ -1046,7 +1046,8 @@ Expected: no output.
 
 - [ ] **Step 2: Commit, push the branch and dispatch once**
 
-Pushing uses Todd's mrballistic credentials; see the handoff for the exact push command. Then:
+The active gh account is the Slalom one, so never run `gh auth switch`. Push with:
+`git -c credential.helper= -c "credential.helper=!f() { echo username=mrballistic; echo password=\$(gh auth token -u mrballistic); }; f" push -u origin <branch>`. Then:
 
 ```bash
 GH_TOKEN=$(gh auth token -u mrballistic) gh workflow run ci-release.yml --ref <branch>
