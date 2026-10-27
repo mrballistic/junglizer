@@ -3,15 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Junglizer · four-bar break instrument for macOS</title>
-<meta name="description" content="Junglizer turns four one-bar breaks into an editable 16-beat jungle phrase. AUv2, VST3 and CLAP for Apple Silicon and Intel Macs. Free 0.9 beta.">
+<title>Junglizer · four-bar break instrument for macOS, Windows and Linux</title>
+<meta name="description" content="Junglizer turns four one-bar breaks into an editable 16-beat jungle phrase. AUv2, VST3 and CLAP for macOS, plus VST3 and CLAP for Windows and Linux. Bring your own breaks. Free 0.9.1 beta 2.">
 <meta name="theme-color" content="#171914">
 <link rel="icon" type="image/png" href="img/favicon.png">
 <link rel="apple-touch-icon" href="img/apple-touch-icon.png">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://getjunglizer.com/">
 <meta property="og:title" content="Junglizer">
-<meta property="og:description" content="A four-bar break instrument for macOS. Slice, place, freeze, export MIDI.">
+<meta property="og:description" content="A four-bar break instrument for macOS, Windows and Linux. Slice, place, freeze, export MIDI.">
 <meta property="og:image" content="https://getjunglizer.com/img/og.png">
 <meta name="twitter:card" content="summary_large_image">
 <link rel="canonical" href="https://getjunglizer.com/">
@@ -20,15 +20,15 @@
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
   "name": "Junglizer",
-  "description": "A four-bar break instrument for macOS. Chop four breaks, rearrange them into a 16-beat jungle phrase, and play it in time with your DAW.",
+  "description": "A four-bar break instrument for macOS, Windows and Linux. Chop four breaks, rearrange them into a 16-beat jungle phrase, and play it in time with your DAW.",
   "url": "https://getjunglizer.com/",
   "image": "https://getjunglizer.com/img/plugin.webp",
   "screenshot": "https://getjunglizer.com/img/plugin.jpg",
   "applicationCategory": "MultimediaApplication",
   "applicationSubCategory": "Audio plugin (AUv2, VST3, CLAP)",
-  "operatingSystem": "macOS",
-  "processorRequirements": "Apple Silicon (arm64) or Intel (x86_64)",
-  "softwareVersion": "0.9.0-beta.1",
+  "operatingSystem": "macOS, Windows, Linux",
+  "processorRequirements": "Apple Silicon (arm64) or Intel (x86_64) on macOS; x86_64 on Windows and Linux",
+  "softwareVersion": "0.9.1-beta.2",
   "downloadUrl": "https://getjunglizer.com/#download",
   "isAccessibleForFree": true,
   "offers": {
@@ -192,7 +192,7 @@
 
 <div class="wrap">
   <header class="top">
-    <span class="tag">0.9 beta · macOS</span>
+    <span class="tag">0.9.1 beta 2 · macOS, Windows, Linux</span>
     <nav>
       <a href="#how">How it works</a>
       <a href="#download">Download</a>
@@ -207,7 +207,7 @@
       <img src="img/wordmark.png" width="1400" height="351" alt="Junglizer">
     </picture></h1>
     <p class="lede">A four-bar break instrument. Chop four breaks, rearrange them into a 16-beat phrase, and play it in time with your DAW.</p>
-    <p class="sub">AUv2 for Logic Pro, plus VST3 and CLAP. Apple Silicon and Intel. The 174 BPM breaks ship inside the plugin.</p>
+    <p class="sub">AUv2 for Logic Pro on macOS, plus VST3 and CLAP on macOS, Windows and Linux. Our own 174 BPM amen ships inside the plugin, and you can load your own breaks.</p>
     <div class="cta">
       <a class="btn primary" href="#download">Download the free beta</a>
       <a class="btn" href="#how">See how it works</a>
@@ -233,7 +233,7 @@
         </div></li>
         <li><span class="n">2</span><div>
           <h3>Pick a break for each bar</h3>
-          <p>Each of the four bars gets its own break. Until you place anything, the full break plays underneath as a ghost, so the groove never drops out.</p>
+          <p>Click an empty slot to choose a WAV, AIFF or MP3 of 4 to 32 beats; on macOS and Windows you can also drag one in. Junglizer reads the tempo from the filename when it has one. Each of the four bars gets its own break. Until you place anything, the full break plays underneath as a ghost, so the groove never drops out.</p>
         </div></li>
         <li><span class="n">3</span><div>
           <h3>Place slices</h3>
@@ -260,7 +260,8 @@
       <div>
         <h3>Automate and map everything</h3>
         <p>Every control is a host automation parameter, so you can draw it in or map it to a hardware controller. Phrases, markers, placements and locks are saved with your project.</p>
-        <p>The plugin follows your host’s tempo. Away from 174 BPM, the breaks change speed and pitch to stay on the grid.</p>
+        <p>Need breaks? <a href="https://kansamples.com/blogs/free-drum-and-bass-sample-packs/amen-break-tribute-pack-free-drum-bass-sample-pack-free-download">KAN Samples’ free Amen Break Tribute</a> and <a href="https://kansamples.com/blogs/free-drum-and-bass-sample-packs/think-break-tribute-pack-free-drum-bass-sample-pack">Think Break Tribute</a> packs work well. You download them from KAN yourself; Junglizer doesn’t bundle them, and KAN Samples isn’t affiliated with it.</p>
+        <p>The plugin follows your host’s tempo. Away from a break’s own tempo, it changes speed and pitch to stay on the grid.</p>
       </div>
     </div>
   </section>
@@ -268,42 +269,65 @@
   <section id="download">
     <div class="wrap">
       <h2>Download</h2>
-      <p class="intro">Junglizer 0.9 beta 1 is free. Pick your Mac, then the format your DAW uses. Each zip holds one plugin.</p>
+      <p class="intro">Junglizer 0.9.1 beta 2 is free. Pick your system, then the format your DAW uses. Each zip holds one plugin.</p>
 
       <div class="dl-grid">
         <div class="dl-card">
           <h3>Apple Silicon</h3>
           <p class="arch">M1 and later · arm64</p>
           <ul>
-            <li><a href="downloads/Junglizer-v0.9.0-beta.1-arm64-component.zip">AUv2</a><span>Logic Pro, GarageBand</span></li>
-            <li><a href="downloads/Junglizer-v0.9.0-beta.1-arm64-vst3.zip">VST3</a><span>Ableton Live, Cubase, Studio One</span></li>
-            <li><a href="downloads/Junglizer-v0.9.0-beta.1-arm64-clap.zip">CLAP</a><span>Bitwig, Reaper</span></li>
+            <li><a href="downloads/Junglizer-v0.9.1-beta.2-arm64-component.zip">AUv2</a><span>Logic Pro, GarageBand</span></li>
+            <li><a href="downloads/Junglizer-v0.9.1-beta.2-arm64-vst3.zip">VST3</a><span>Ableton Live, Cubase, Studio One</span></li>
+            <li><a href="downloads/Junglizer-v0.9.1-beta.2-arm64-clap.zip">CLAP</a><span>Bitwig, Reaper</span></li>
           </ul>
         </div>
         <div class="dl-card">
           <h3>Intel</h3>
           <p class="arch">x86_64</p>
           <ul>
-            <li><a href="downloads/Junglizer-v0.9.0-beta.1-x86_64-component.zip">AUv2</a><span>Logic Pro, GarageBand</span></li>
-            <li><a href="downloads/Junglizer-v0.9.0-beta.1-x86_64-vst3.zip">VST3</a><span>Ableton Live, Cubase, Studio One</span></li>
-            <li><a href="downloads/Junglizer-v0.9.0-beta.1-x86_64-clap.zip">CLAP</a><span>Bitwig, Reaper</span></li>
+            <li><a href="downloads/Junglizer-v0.9.1-beta.2-x86_64-component.zip">AUv2</a><span>Logic Pro, GarageBand</span></li>
+            <li><a href="downloads/Junglizer-v0.9.1-beta.2-x86_64-vst3.zip">VST3</a><span>Ableton Live, Cubase, Studio One</span></li>
+            <li><a href="downloads/Junglizer-v0.9.1-beta.2-x86_64-clap.zip">CLAP</a><span>Bitwig, Reaper</span></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="dl-grid" style="margin-top:20px">
+        <div class="dl-card">
+          <h3>Windows</h3>
+          <p class="arch">x86_64 · unsigned</p>
+          <ul>
+            <li><a href="downloads/Junglizer-v0.9.1-beta.2-windows-x86_64-vst3.zip">VST3</a><span>Ableton Live, Cubase, Studio One</span></li>
+            <li><a href="downloads/Junglizer-v0.9.1-beta.2-windows-x86_64-clap.zip">CLAP</a><span>Bitwig, Reaper</span></li>
+          </ul>
+        </div>
+        <div class="dl-card">
+          <h3>Linux</h3>
+          <p class="arch">x86_64 · beta · unsigned</p>
+          <ul>
+            <li><a href="downloads/Junglizer-v0.9.1-beta.2-linux-x86_64-vst3.zip">VST3</a><span>Bitwig, Reaper</span></li>
+            <li><a href="downloads/Junglizer-v0.9.1-beta.2-linux-x86_64-clap.zip">CLAP</a><span>Bitwig, Reaper</span></li>
           </ul>
         </div>
       </div>
 
       <h3 style="margin:48px 0 0;font-size:19px">Install</h3>
       <table>
-        <thead><tr><th>Format</th><th>Unzip, then copy the bundle to</th></tr></thead>
+        <thead><tr><th>System</th><th>Format</th><th>Unzip, then copy the bundle to</th></tr></thead>
         <tbody>
-          <tr><td>AUv2</td><td><code>~/Library/Audio/Plug-Ins/Components/</code></td></tr>
-          <tr><td>VST3</td><td><code>~/Library/Audio/Plug-Ins/VST3/</code></td></tr>
-          <tr><td>CLAP</td><td><code>~/Library/Audio/Plug-Ins/CLAP/</code></td></tr>
+          <tr><td>macOS</td><td>AUv2</td><td><code>~/Library/Audio/Plug-Ins/Components/</code></td></tr>
+          <tr><td>macOS</td><td>VST3</td><td><code>~/Library/Audio/Plug-Ins/VST3/</code></td></tr>
+          <tr><td>macOS</td><td>CLAP</td><td><code>~/Library/Audio/Plug-Ins/CLAP/</code></td></tr>
+          <tr><td>Windows</td><td>VST3</td><td><code>C:\Program Files\Common Files\VST3</code></td></tr>
+          <tr><td>Windows</td><td>CLAP</td><td><code>C:\Program Files\Common Files\CLAP</code></td></tr>
+          <tr><td>Linux</td><td>VST3</td><td><code>~/.vst3</code></td></tr>
+          <tr><td>Linux</td><td>CLAP</td><td><code>~/.clap</code></td></tr>
         </tbody>
       </table>
-      <p style="color:var(--muted);margin-top:16px">Restart your DAW so it finds the plugin. The breaks are built in, so there’s nothing else to install.</p>
+      <p style="color:var(--muted);margin-top:16px">Restart your DAW so it finds the plugin. The amen is built in, so there’s nothing else to install.</p>
 
       <div class="note">
-        <strong>This is a beta.</strong> Every build is signed and notarized by Apple, so it loads without any security prompts. SHA-256 checksums: <a href="downloads/SHA256-arm64.txt">arm64</a>, <a href="downloads/SHA256-x86_64.txt">Intel</a>. Fit to length currently changes pitch along with speed; pitch-preserving stretch is planned.
+        <strong>This is a beta.</strong> The macOS builds are signed and notarized by Apple, so they load without security prompts. The Windows and Linux builds are unsigned, so Windows may warn you before you unzip them, and Linux support is beta. SHA-256 checksums: <a href="downloads/SHA256-arm64.txt">arm64</a>, <a href="downloads/SHA256-x86_64.txt">Intel</a>, <a href="downloads/SHA256-windows.txt">Windows</a>, <a href="downloads/SHA256-linux.txt">Linux</a>. Fit to length currently changes pitch along with speed; pitch-preserving stretch is planned.
       </div>
     </div>
   </section>
@@ -312,12 +336,12 @@
 <footer>
   <div class="wrap">
     <span>Junglizer by <a href="https://mrballistic.com">mrballistic</a></span>
-    <span>macOS · AUv2 · VST3 · CLAP</span>
+    <span>macOS · Windows · Linux · AUv2 · VST3 · CLAP</span>
     <nav class="legal" aria-label="Legal">
       <a href="privacy/">Privacy</a>
       <button type="button" class="consent-open" data-consent-open>Cookie settings</button>
     </nav>
-    <p class="inspired">Inspired by Nick Collins’s paper <a href="https://composerprogrammer.com/research/acmethodsforbbsci.pdf">“Algorithmic Composition Methods for Breakbeat Science”</a> (2001).</p>
+    <p class="inspired">Inspired by Nick Collins’s paper <a href="https://composerprogrammer.com/research/acmethodsforbbsci.pdf">“Algorithmic Composition Methods for Breakbeat Science”</a> (2001). The built-in amen is played on the Salamander Drumkit by Alexander Holm (<a href="https://creativecommons.org/licenses/by-sa/3.0/">CC BY-SA 3.0</a>).</p>
   </div>
 </footer>
 </body>
