@@ -330,13 +330,76 @@ fn path_allowed(path: &str) -> bool {
     }
 }
 
+/// The platform whose path rules `restore_allowed` applies. The loader
+/// passes `Host::CURRENT`; tests pass each one so every rule runs on any
+/// host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Host {
+    Windows,
+    MacOs,
+    Linux,
+    Other,
+}
+
+impl Host {
+    const CURRENT: Host = if cfg!(windows) {
+        Host::Windows
+    } else if cfg!(target_os = "macos") {
+        Host::MacOs
+    } else if cfg!(target_os = "linux") {
+        Host::Linux
+    } else {
+        Host::Other
+    };
+}
+
+/// Whether `path` sits under a root the automounter or a network file
+/// system serves on `host`: `/net/` and `/Network/` on macOS (matched
+/// ignoring ASCII case, as APFS and HFS+ usually are), `/net/`, `/misc/`
+/// and `/run/user/<uid>/gvfs/` on Linux. Merely looking up a name there
+/// can mount a remote share. The root itself (`/net`) is not a mount and
+/// counts too, so `/net` alone is refused.
+fn is_automount(path: &str, host: Host) -> bool {
+    let bytes = path.as_bytes();
+    let under = |root: &[u8], ignore_case: bool| {
+        bytes.len() >= root.len()
+            && (if ignore_case {
+                bytes[..root.len()].eq_ignore_ascii_case(root)
+            } else {
+                &bytes[..root.len()] == root
+            })
+            && bytes.get(root.len()).is_none_or(|&byte| byte == b'/')
+    };
+    match host {
+        Host::MacOs => under(b"/net", true) || under(b"/Network", true),
+        Host::Linux => {
+            under(b"/net", false)
+                || under(b"/misc", false)
+                || bytes
+                    .strip_prefix(b"/run/user/")
+                    .and_then(|rest| {
+                        let uid = rest.iter().position(|&byte| byte == b'/')?;
+                        let (uid, rest) = rest.split_at(uid);
+                        (!uid.is_empty() && uid.iter().all(u8::is_ascii_digit)).then_some(rest)
+                    })
+                    .is_some_and(|rest| {
+                        rest.strip_prefix(b"/gvfs")
+                            .is_some_and(|tail| tail.first().is_none_or(|&byte| byte == b'/'))
+                    })
+        }
+        Host::Windows | Host::Other => false,
+    }
+}
+
 /// Whether a path from project state may be opened without asking. Stricter
 /// than `path_allowed`; see the comment where it is used for why. The
-/// drive-letter, DOS-device and colon rules apply only when `windows` is
-/// set (`cfg!(windows)` in the loader): elsewhere `Aux`, `nul.wav` and `:`
-/// (how macOS stores a Finder name's `/`) are ordinary names. Namespace,
-/// network and dot-component paths are refused everywhere.
-fn restore_allowed(path: &str, windows: bool) -> bool {
+/// drive-letter, DOS-device and colon rules apply only on `Host::Windows`:
+/// elsewhere `Aux`, `nul.wav` and `:` (how macOS stores a Finder name's
+/// `/`) are ordinary names. The automount roots apply only on macOS and
+/// Linux (see `is_automount`). Namespace, network and dot-component paths
+/// are refused everywhere.
+fn restore_allowed(path: &str, host: Host) -> bool {
+    let windows = host == Host::Windows;
     let bytes = path.as_bytes();
     // A drive letter must start an absolute path (`C:\`, `C:/`). A
     // drive-relative `C:CON` or `C:..\x` would hide its first component
@@ -354,6 +417,7 @@ fn restore_allowed(path: &str, windows: bool) -> bool {
         && win32_namespace(bytes).is_none()
         && !is_nt_prefix(bytes)
         && !is_remote(path)
+        && !is_automount(path, host)
         && !rest
             .as_bytes()
             .split(|&byte| is_slash(byte))
@@ -495,7 +559,12 @@ fn load_unguarded(path: &[u8], hash: u64, seq: u64, restore: bool) -> LoadOutcom
     // anyone, so a restore opens only an ordinary local path:
     // - Never a network path, not even to stat it. On Windows, touching
     //   `\\server\share` makes the OS sign in to that server with the
-    //   user's NTLM hash, so a crafted project could harvest it.
+    //   user's NTLM hash, so a crafted project could harvest it. The same
+    //   goes for automounter and network roots on macOS (`/net/`,
+    //   `/Network/`) and Linux (`/net/`, `/misc/`, gvfs under
+    //   `/run/user/<uid>/`): looking a name up there mounts a remote share,
+    //   which reaches out to an attacker's server and may offer the user's
+    //   Kerberos or saved credentials, or hang the loader on a dead host.
     // - Never a namespace path (`\\?\`, `//?/`, `\\.\`, `//./`, `\??\`).
     //   Win32 normalizes the forward forms, so `..` can walk a drive path
     //   into UNC or device space, e.g. `//?/C:/../../UNC/srv/share/x.wav`;
@@ -511,7 +580,7 @@ fn load_unguarded(path: &[u8], hash: u64, seq: u64, restore: bool) -> LoadOutcom
     // missing and the user can Relink. Choose (a file the user picked in
     // the dialog) is trusted, minus raw devices. Keep these checks before
     // every filesystem call, `metadata` included.
-    if restore && !restore_allowed(path, cfg!(windows)) {
+    if restore && !restore_allowed(path, Host::CURRENT) {
         return LoadOutcome::Missing;
     }
     if !path_allowed(path) {
@@ -835,14 +904,14 @@ mod tests {
     #[test]
     fn restore_refuses_drive_relative_paths() {
         for refused in ["C:CON", "C:nul.wav", "C:x.wav", "C:", r"c:..\x.wav"] {
-            assert!(!restore_allowed(refused, true), "{refused}");
+            assert!(!restore_allowed(refused, Host::Windows), "{refused}");
         }
         for allowed in [r"C:\a.wav", "C:/a.wav", r"c:\Breaks\x.wav"] {
-            assert!(restore_allowed(allowed, true), "{allowed}");
+            assert!(restore_allowed(allowed, Host::Windows), "{allowed}");
         }
         // The rest after `C:\` gets the device and dot checks.
-        assert!(!restore_allowed(r"C:\CON", true));
-        assert!(!restore_allowed(r"C:\..\x.wav", true));
+        assert!(!restore_allowed(r"C:\CON", Host::Windows));
+        assert!(!restore_allowed(r"C:\..\x.wav", Host::Windows));
         // Choose is unchanged.
         assert!(path_allowed("C:CON"));
     }
@@ -859,10 +928,10 @@ mod tests {
             "CON:x.wav",
             ":x.wav",
         ] {
-            assert!(!restore_allowed(refused, true), "{refused}");
+            assert!(!restore_allowed(refused, Host::Windows), "{refused}");
         }
         for allowed in [r"C:\Breaks\a.wav", r"c:\a.wav", "/Users/a/b.wav"] {
-            assert!(restore_allowed(allowed, true), "{allowed}");
+            assert!(restore_allowed(allowed, Host::Windows), "{allowed}");
         }
         // Choose is unchanged: the user picked the file.
         assert!(path_allowed(r"C:\x\a.wav:evil"));
@@ -889,7 +958,7 @@ mod tests {
             r"C:\Breaks\NUL. .wav",
             r"C:\Breaks\nul.tar.wav",
         ] {
-            assert!(!restore_allowed(refused, true), "{refused}");
+            assert!(!restore_allowed(refused, Host::Windows), "{refused}");
             assert!(path_allowed(refused), "Choose still takes {refused}");
         }
         for allowed in [
@@ -901,7 +970,7 @@ mod tests {
             "/x/.wav",
             "C:\\Breaks\\COM\u{b4}.wav",
         ] {
-            assert!(restore_allowed(allowed, true), "{allowed}");
+            assert!(restore_allowed(allowed, Host::Windows), "{allowed}");
         }
     }
 
@@ -927,7 +996,7 @@ mod tests {
             r"\\srv\share\loop 174.wav",
             "//srv/share/a.wav",
         ] {
-            assert!(!restore_allowed(refused, true), "{refused}");
+            assert!(!restore_allowed(refused, Host::Windows), "{refused}");
         }
         for allowed in [
             r"C:\Breaks\amen 174.wav",
@@ -936,7 +1005,7 @@ mod tests {
             "/Users/todd/a..b/x.wav",
             "/Users/todd/.breaks/a.wav",
         ] {
-            assert!(restore_allowed(allowed, true), "{allowed}");
+            assert!(restore_allowed(allowed, Host::Windows), "{allowed}");
         }
         // The user picked these in the dialog, so Choose still takes them.
         for chosen in [
@@ -1045,8 +1114,8 @@ mod tests {
             "/x/Con/nul.wav",
             "/x/COM1:",
         ] {
-            assert!(restore_allowed(allowed, false), "{allowed}");
-            assert!(!restore_allowed(allowed, true), "{allowed}");
+            assert!(restore_allowed(allowed, Host::Other), "{allowed}");
+            assert!(!restore_allowed(allowed, Host::Windows), "{allowed}");
         }
         // Namespaces, shares and dot components are refused everywhere.
         for refused in [
@@ -1059,8 +1128,76 @@ mod tests {
             "/Users/a/../b.wav",
             "/Users/a/./b.wav",
         ] {
-            assert!(!restore_allowed(refused, false), "{refused}");
+            assert!(!restore_allowed(refused, Host::Other), "{refused}");
         }
+    }
+
+    #[test]
+    fn restore_refuses_automount_roots_on_macos_and_linux() {
+        let mac_refused = [
+            "/net/host/share/a.wav",
+            "/Network/Servers/host/a.wav",
+            "/NET/host/a.wav",
+            "/network/servers/a.wav",
+            "/Net",
+            "/net/",
+        ];
+        for refused in mac_refused {
+            assert!(!restore_allowed(refused, Host::MacOs), "{refused}");
+            assert!(path_allowed(refused), "Choose still takes {refused}");
+        }
+        let linux_refused = [
+            "/net/host/a.wav",
+            "/misc/cd/a.wav",
+            "/misc",
+            "/run/user/1000/gvfs/smb-share:server=h,share=s/a.wav",
+            "/run/user/0/gvfs",
+        ];
+        for refused in linux_refused {
+            assert!(!restore_allowed(refused, Host::Linux), "{refused}");
+        }
+        // Linux paths are case-sensitive; macOS has no /misc or gvfs root.
+        for allowed in ["/NET/host/a.wav", "/Misc/a.wav", "/Network/a.wav"] {
+            assert!(restore_allowed(allowed, Host::Linux), "{allowed}");
+        }
+        for allowed in ["/misc/a.wav", "/run/user/1000/gvfs/a.wav"] {
+            assert!(restore_allowed(allowed, Host::MacOs), "{allowed}");
+        }
+        // Only the roots themselves count, not look-alike names or deeper dirs.
+        for allowed in [
+            "/network.wav",
+            "/netherlands/a.wav",
+            "/miscellany/a.wav",
+            "/Users/todd/net/a.wav",
+            "/home/todd/misc/a.wav",
+            "/run/user/1000/gvfsx/a.wav",
+            "/run/user/abc/gvfs/a.wav",
+            "/run/user//gvfs/a.wav",
+        ] {
+            assert!(restore_allowed(allowed, Host::MacOs), "{allowed}");
+            assert!(restore_allowed(allowed, Host::Linux), "{allowed}");
+        }
+        // Windows and other hosts don't have these roots.
+        for path in mac_refused.iter().chain(&linux_refused) {
+            assert!(restore_allowed(path, Host::Other), "{path}");
+        }
+        assert!(restore_allowed("/net/host/a.wav", Host::Windows));
+    }
+
+    #[test]
+    fn restore_publishes_missing_for_an_automount_path_on_this_host() {
+        if !matches!(Host::CURRENT, Host::MacOs | Host::Linux) {
+            return;
+        }
+        // Refused before any filesystem call, so no mount is attempted.
+        let lib = Library::default();
+        lib.request(0, b"/net/junglizer-test-host/a.wav", Purpose::Restore)
+            .unwrap();
+        lib.run_pending();
+        assert!(matches!(
+            lib.result(0, Purpose::Restore).unwrap().outcome,
+            LoadOutcome::Missing
+        ));
     }
 
     // NTFS can't hold these names, so the setup can't run on Windows; the

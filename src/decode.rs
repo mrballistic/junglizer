@@ -2,6 +2,7 @@
 //! UI/init thread only, never from the audio callback.
 
 use crate::sample::StereoSample;
+use crate::tempo::MAX_BREAK_SECS;
 use std::io::Cursor;
 use std::path::Path;
 use symphonia::core::codecs::audio::AudioDecoderOptions;
@@ -23,6 +24,25 @@ pub enum DecodeError {
     TooLong,
 }
 
+/// The sample rates we accept, declared or decoded. Anything outside is a
+/// broken or crafted file: a huge rate would stretch the `max_secs` cap
+/// (which is in seconds, so scales with the rate) past any sane memory use.
+const MIN_RATE: u32 = 8_000;
+const MAX_RATE: u32 = 384_000;
+
+/// An absolute frame cap for capped decodes, independent of the file's
+/// rate: the longest break at the highest accepted rate (about 9.3 M
+/// frames, 74 MB as stereo f32).
+const MAX_CAPPED_FRAMES: u64 = (MAX_BREAK_SECS * MAX_RATE as f64) as u64;
+
+/// Capped loads refuse a file bigger than this before opening it. A
+/// legitimate break is at most about 74 MB even as 384 kHz stereo f32 WAV.
+const MAX_CAPPED_FILE_BYTES: u64 = 512 * 1024 * 1024;
+
+fn rate_ok(rate: u32) -> bool {
+    (MIN_RATE..=MAX_RATE).contains(&rate)
+}
+
 pub fn decode_file(path: &Path) -> Result<StereoSample, DecodeError> {
     decode_file_capped(path, None)
 }
@@ -31,10 +51,16 @@ pub fn decode_file(path: &Path) -> Result<StereoSample, DecodeError> {
 /// declares, or decodes to, more than `max_secs` of audio, so a huge file
 /// is never held in memory whole.
 pub fn decode_file_capped(path: &Path, max_secs: Option<f64>) -> Result<StereoSample, DecodeError> {
-    let file = std::fs::File::open(path).map_err(|error| match error.kind() {
+    let io_error = |error: std::io::Error| match error.kind() {
         std::io::ErrorKind::NotFound => DecodeError::Missing,
         _ => DecodeError::Unreadable,
-    })?;
+    };
+    if max_secs.is_some()
+        && std::fs::metadata(path).map_err(io_error)?.len() > MAX_CAPPED_FILE_BYTES
+    {
+        return Err(DecodeError::TooLong);
+    }
+    let file = std::fs::File::open(path).map_err(io_error)?;
     let extension = path.extension().and_then(|extension| extension.to_str());
     decode_source(Box::new(file), extension, max_secs)
 }
@@ -43,9 +69,10 @@ pub fn decode_bytes(bytes: &[u8], extension: Option<&str>) -> Result<StereoSampl
     decode_source(Box::new(Cursor::new(bytes.to_vec())), extension, None)
 }
 
-/// Whether `frames` at `rate` run longer than `max_secs`.
+/// Whether `frames` at `rate` run longer than `max_secs`, or past
+/// `MAX_CAPPED_FRAMES` whatever the rate. Callers check `rate_ok` first.
 fn over_cap(frames: u64, rate: u32, max_secs: Option<f64>) -> bool {
-    max_secs.is_some_and(|max| rate > 0 && frames as f64 > max * f64::from(rate))
+    max_secs.is_some_and(|max| frames > MAX_CAPPED_FRAMES || frames as f64 > max * f64::from(rate))
 }
 
 fn decode_source(
@@ -76,8 +103,11 @@ fn decode_source(
         .as_ref()
         .and_then(|params| params.audio())
         .ok_or(DecodeError::Unreadable)?;
-    if let (Some(declared), Some(rate)) = (declared_frames, params.sample_rate)
-        && over_cap(declared, rate, max_secs)
+    if params.sample_rate.is_some_and(|rate| !rate_ok(rate)) {
+        return Err(DecodeError::Unreadable);
+    }
+    if let Some(declared) = declared_frames
+        && over_cap(declared, params.sample_rate.unwrap_or(MAX_RATE), max_secs)
     {
         return Err(DecodeError::TooLong);
     }
@@ -106,15 +136,23 @@ fn decode_source(
                     return Err(DecodeError::Unreadable);
                 }
                 sample_rate = buffer.spec().rate();
+                if !rate_ok(sample_rate) {
+                    return Err(DecodeError::Unreadable);
+                }
+                // Covers files that declare no length, or lie about it. Checked
+                // before copying, so an oversized buffer is never copied.
+                if over_cap(
+                    (frames.len() + buffer.frames()) as u64,
+                    sample_rate,
+                    max_secs,
+                ) {
+                    return Err(DecodeError::TooLong);
+                }
                 buffer.copy_to_vec_interleaved::<f32>(&mut interleaved);
                 frames.extend(interleaved.chunks_exact(channels).map(|frame| {
                     let left = frame[0];
                     [left, if channels == 1 { left } else { frame[1] }]
                 }));
-                // Covers files that declare no length, or lie about it.
-                if over_cap(frames.len() as u64, sample_rate, max_secs) {
-                    return Err(DecodeError::TooLong);
-                }
             }
             Err(Error::DecodeError(_)) => {}
             Err(_) => break,
@@ -201,6 +239,70 @@ mod tests {
         assert_eq!(decode(Some(1.0)).err(), Some(DecodeError::TooLong));
         let whole = decode(None).unwrap();
         assert!((whole.duration_secs() - 1.5).abs() <= 0.015);
+    }
+
+    /// The mono 48 kHz fixture with its `fmt ` sample rate (and byte rate,
+    /// to stay consistent) replaced by `rate`.
+    fn wav_with_rate(rate: u32) -> Vec<u8> {
+        let mut bytes = std::fs::read(fixture("loop_160_4beats_mono16_48k.wav")).unwrap();
+        let fmt = bytes.windows(4).position(|w| w == b"fmt ").unwrap();
+        let block_align = u32::from(u16::from_le_bytes([bytes[fmt + 20], bytes[fmt + 21]]));
+        bytes[fmt + 12..fmt + 16].copy_from_slice(&rate.to_le_bytes());
+        bytes[fmt + 16..fmt + 20].copy_from_slice(&rate.wrapping_mul(block_align).to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn sample_rates_outside_the_accepted_range_are_unreadable() {
+        for rate in [4_000_000_000, 0, 7_999, 384_001] {
+            let bytes = wav_with_rate(rate);
+            for cap in [None, Some(MAX_BREAK_SECS)] {
+                assert_eq!(
+                    decode_source(Box::new(Cursor::new(bytes.clone())), Some("wav"), cap).err(),
+                    Some(DecodeError::Unreadable),
+                    "{rate} Hz, cap {cap:?}"
+                );
+            }
+        }
+        // The edges of the range are fine.
+        for rate in [8_000, 384_000] {
+            let s = decode_source(
+                Box::new(Cursor::new(wav_with_rate(rate))),
+                Some("wav"),
+                None,
+            )
+            .unwrap();
+            assert_eq!(s.sample_rate, rate);
+        }
+    }
+
+    #[test]
+    fn the_absolute_frame_cap_holds_whatever_the_rate() {
+        assert!(over_cap(MAX_CAPPED_FRAMES + 1, MAX_RATE, Some(f64::MAX)));
+        assert!(!over_cap(
+            MAX_CAPPED_FRAMES,
+            MAX_RATE,
+            Some(MAX_BREAK_SECS + 1.0)
+        ));
+        assert!(!over_cap(u64::MAX, MAX_RATE, None));
+    }
+
+    #[test]
+    fn a_capped_load_refuses_an_oversized_file_before_opening_it() {
+        let dir = std::env::temp_dir().join(format!("junglizer-decode-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("huge.wav");
+        // Sparse: sets the length without writing 512 MB.
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_CAPPED_FILE_BYTES + 1).unwrap();
+        drop(file);
+        let capped = decode_file_capped(&path, Some(MAX_BREAK_SECS)).err();
+        let uncapped = decode_file(&path).err();
+        std::fs::remove_file(&path).unwrap();
+        let _ = std::fs::remove_dir(&dir);
+        assert_eq!(capped, Some(DecodeError::TooLong));
+        // Uncapped decodes keep their behavior: zeros aren't audio.
+        assert_eq!(uncapped, Some(DecodeError::Unreadable));
     }
 
     #[test]
