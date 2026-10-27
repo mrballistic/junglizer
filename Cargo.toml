@@ -43,8 +43,8 @@ truce-vst3 = { version = "6.3", optional = true }
 truce-au = { version = "6.3", optional = true }
 truce-standalone = { version = "6.3", features = ["gui"], optional = true }
 clap-sys = { version = "0.5", optional = true }
-hound = "3.5"
 png = "0.18"
+symphonia = { version = "0.6", default-features = false, features = ["wav", "aiff", "pcm", "mp3"] }
 
 # Custom profile for `cargo truce install --shell`. The shell-mode
 # build (`cargo build --profile shell --features ...,shell`) lands the
@@ -54,3 +54,6 @@ png = "0.18"
 # DSP perf parity.
 [profile.shell]
 inherits = "release"
+
+[dev-dependencies]
+hound = "3.5"
