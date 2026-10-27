@@ -1063,6 +1063,9 @@ mod tests {
         }
     }
 
+    // NTFS can't hold these names, so the setup can't run on Windows; the
+    // pure `restore_allowed` test covers the Windows rules.
+    #[cfg(not(windows))]
     #[test]
     fn restore_opens_colon_and_device_like_names_where_they_are_just_names() {
         // On macOS a Finder name with "/" is stored with ":", and Aux, Con
@@ -1087,11 +1090,7 @@ mod tests {
             .collect();
         std::fs::remove_dir_all(&dir).unwrap();
         for (name, outcome) in names.iter().zip(outcomes) {
-            if cfg!(windows) {
-                assert!(matches!(outcome, LoadOutcome::Missing), "{name}");
-            } else {
-                assert!(matches!(outcome, LoadOutcome::Loaded(_)), "{name}");
-            }
+            assert!(matches!(outcome, LoadOutcome::Loaded(_)), "{name}");
         }
     }
 
