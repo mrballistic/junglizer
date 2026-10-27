@@ -1,3 +1,4 @@
+use crate::decode::{DecodeError, decode_bytes, decode_file};
 use crate::edit_state::{MAX_STEPS, SliceMarker};
 use std::path::Path;
 
@@ -10,31 +11,20 @@ pub struct StereoSample {
 }
 
 impl StereoSample {
-    pub fn load(path: &Path) -> Result<Self, hound::Error> {
-        Self::decode(hound::WavReader::open(path)?)
+    pub fn load(path: &Path) -> Result<Self, DecodeError> {
+        decode_file(path)
     }
 
-    pub fn from_bytes(bytes: &'static [u8]) -> Result<Self, hound::Error> {
-        Self::decode(hound::WavReader::new(std::io::Cursor::new(bytes))?)
+    pub fn from_bytes(bytes: &'static [u8]) -> Result<Self, DecodeError> {
+        decode_bytes(bytes, Some("wav"))
     }
 
-    fn decode<R: std::io::Read + std::io::Seek>(
-        mut reader: hound::WavReader<R>,
-    ) -> Result<Self, hound::Error> {
-        let spec = reader.spec();
-        if spec.channels != 2 || spec.sample_format != hound::SampleFormat::Int {
-            return Err(hound::Error::Unsupported);
+    #[allow(dead_code)] // used by the break importer in later tasks
+    pub fn duration_secs(&self) -> f64 {
+        if self.sample_rate == 0 {
+            return 0.0;
         }
-        let scale = (1_u64 << (spec.bits_per_sample - 1)) as f32;
-        let values: Vec<i32> = reader.samples::<i32>().collect::<Result<_, _>>()?;
-        let frames = values
-            .chunks_exact(2)
-            .map(|pair| [pair[0] as f32 / scale, pair[1] as f32 / scale])
-            .collect();
-        Ok(Self {
-            frames,
-            sample_rate: spec.sample_rate,
-        })
+        self.frames.len() as f64 / f64::from(self.sample_rate)
     }
 
     pub fn at_frame(&self, position: f64, channel: usize) -> f32 {

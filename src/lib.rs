@@ -1,5 +1,6 @@
 use truce::prelude::*;
 
+mod decode;
 pub mod edit_state;
 mod live;
 mod midi;
