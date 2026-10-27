@@ -144,6 +144,6 @@ Use the widget radius for native controls, the waveform radius for audio wells, 
 
 Output supports vertical dragging with host begin/set/end gestures, Shift fine adjustment, focused arrow-key adjustment, and double-click reset to 0 dB. Its lime arc and ivory pointer show the current host gain value.
 
-The tone crossfader uses a 32 px interaction height, a 12 px recessed rail, an ivory ridged cap, and lime Dry center marks. Native slider keyboard behavior and host gestures remain intact; Double-click returns to Dry.
+The tone crossfader uses a 32 px interaction height, a 12 px rail filled with the edge token (#4C513D) in every state so it reads against the canvas, an ivory ridged cap, and lime Dry center marks. Native slider keyboard behavior and host gestures remain intact; Double-click returns to Dry.
 
 Header controls use equal gaps between playback status, crossfader, 808 root, and Output groups after the wordmark. The redundant Thin/Thicc heading and lower-octave caption are removed; the fader has no heading, duplicate readout, or Reset button; Thin, Dry, and Thicc are labeled once below the rail.
