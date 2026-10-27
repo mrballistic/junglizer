@@ -278,16 +278,16 @@ struct Audition {
 }
 
 const SOURCE_FILES: [&str; 4] = [
-    "174_AmenBreak_Cut_01_NoStab.wav",
-    "174_AmenBreak_Cut_02.wav",
-    "174_AmenBreak_Cut_03.wav",
-    "174_AmenBreak_Cut_04.wav",
+    "174_JunglizerAmen_Bar_01.wav",
+    "174_JunglizerAmen_Bar_02.wav",
+    "174_JunglizerAmen_Bar_03.wav",
+    "174_JunglizerAmen_Bar_04.wav",
 ];
 const SOURCE_AUDIO: [&[u8]; 4] = [
-    include_bytes!("../sample/174_AmenBreak_Cut_01_NoStab.wav"),
-    include_bytes!("../sample/174_AmenBreak_Cut_02.wav"),
-    include_bytes!("../sample/174_AmenBreak_Cut_03.wav"),
-    include_bytes!("../sample/174_AmenBreak_Cut_04.wav"),
+    include_bytes!("../sample/174_JunglizerAmen_Bar_01.wav"),
+    include_bytes!("../sample/174_JunglizerAmen_Bar_02.wav"),
+    include_bytes!("../sample/174_JunglizerAmen_Bar_03.wav"),
+    include_bytes!("../sample/174_JunglizerAmen_Bar_04.wav"),
 ];
 
 impl Junglizer {
