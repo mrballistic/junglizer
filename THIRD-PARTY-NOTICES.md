@@ -8,7 +8,7 @@ Built-in breaks played on the Salamander Drumkit by Alexander Holm.
 
 - License: Creative Commons Attribution-ShareAlike 3.0 (CC BY-SA 3.0), https://creativecommons.org/licenses/by-sa/3.0/
 - Source: Salamander Drumkit v1, https://download.linuxaudio.org/musical-instrument-libraries/sfz/salamander_drumkit_v1.tar.7z (archive SHA-256 `a576ff79fcc33b53d8a373f459277e6727bd4e68d5383b9d69b1d9e0ec585329`)
-- The pattern was programmed from scratch for Junglizer. The four bar renders embedded in the plugin (`sample/174_JunglizerAmen_Bar_01.wav` to `_04.wav`) are adaptations of the Salamander samples, made by layering, EQ and level changes.
+- The pattern was programmed from scratch for Junglizer. The four bar renders embedded in the plugin (`sample/174_JunglizerAmen_Bar_01.wav` to `_04.wav`) are adaptations of the Salamander samples: rendered from Salamander Drumkit one-shots (one sample per hit), arranged to a pattern programmed from scratch, with EQ and level shaping.
 - Share-alike applies to the sample set only: the adapted drum renders are offered under CC BY-SA 3.0. It does not extend to the Junglizer plugin code, which is licensed separately.
 
 See `sample/LICENSE.md` in the source repository for the full terms.
