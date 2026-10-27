@@ -7,6 +7,8 @@ Rule (design doc, "Length"):
 2. Otherwise, fastest fit: for each whole-bar beat count from MIN_BEATS to 32, BPM =
    beats x 60 / duration; take the largest BPM at or below 195; accept it if it's 80 or above.
 
+Mirrors src/tempo.rs; keep them in step.
+
 Read-only analysis. Usage: python3 tools/tempo/check_tempo_rule.py [--no-hint] <folder> [<folder> ...]
 WAV via the stdlib; AIFF/MP3 durations via macOS afinfo.
 """
