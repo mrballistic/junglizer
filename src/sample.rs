@@ -1,3 +1,4 @@
+use crate::decode::{DecodeError, decode_bytes, decode_file};
 use crate::edit_state::{MAX_STEPS, SliceMarker};
 use std::path::Path;
 
@@ -10,31 +11,19 @@ pub struct StereoSample {
 }
 
 impl StereoSample {
-    pub fn load(path: &Path) -> Result<Self, hound::Error> {
-        Self::decode(hound::WavReader::open(path)?)
+    pub fn load(path: &Path) -> Result<Self, DecodeError> {
+        decode_file(path)
     }
 
-    pub fn from_bytes(bytes: &'static [u8]) -> Result<Self, hound::Error> {
-        Self::decode(hound::WavReader::new(std::io::Cursor::new(bytes))?)
+    pub fn from_bytes(bytes: &'static [u8]) -> Result<Self, DecodeError> {
+        decode_bytes(bytes, Some("wav"))
     }
 
-    fn decode<R: std::io::Read + std::io::Seek>(
-        mut reader: hound::WavReader<R>,
-    ) -> Result<Self, hound::Error> {
-        let spec = reader.spec();
-        if spec.channels != 2 || spec.sample_format != hound::SampleFormat::Int {
-            return Err(hound::Error::Unsupported);
+    pub fn duration_secs(&self) -> f64 {
+        if self.sample_rate == 0 {
+            return 0.0;
         }
-        let scale = (1_u64 << (spec.bits_per_sample - 1)) as f32;
-        let values: Vec<i32> = reader.samples::<i32>().collect::<Result<_, _>>()?;
-        let frames = values
-            .chunks_exact(2)
-            .map(|pair| [pair[0] as f32 / scale, pair[1] as f32 / scale])
-            .collect();
-        Ok(Self {
-            frames,
-            sample_rate: spec.sample_rate,
-        })
+        self.frames.len() as f64 / f64::from(self.sample_rate)
     }
 
     pub fn at_frame(&self, position: f64, channel: usize) -> f32 {
@@ -47,12 +36,13 @@ impl StereoSample {
         self.frames[first][channel] * (1.0 - fraction) + self.frames[second][channel] * fraction
     }
 
-    /// Linear interpolation at a position in the source bar.
-    pub fn at_beat(&self, beat: f64, channel: usize) -> f32 {
-        if self.frames.is_empty() || !(0.0..4.0).contains(&beat) {
+    /// Linear interpolation at a position in a break `beats` long. The file
+    /// spans the beats exactly, whatever its sample rate.
+    pub fn at_beat(&self, beat: f64, beats: f64, channel: usize) -> f32 {
+        if self.frames.is_empty() || !(beats > 0.0) || !(0.0..beats).contains(&beat) {
             return 0.0;
         }
-        self.at_frame(beat * self.frames.len() as f64 / 4.0, channel)
+        self.at_frame(beat * self.frames.len() as f64 / beats, channel)
     }
 
     /// Offer sound-aligned starting markers for a new slice count. The user
@@ -167,7 +157,7 @@ mod tests {
             assert!((60_820..=60_840).contains(&sample.frames.len()));
             assert!(sample.frames.iter().any(|frame| frame[0].abs() > 0.01));
             assert!(sample.frames.iter().any(|frame| frame[1].abs() > 0.01));
-            assert_eq!(sample.at_beat(4.0, 0), 0.0);
+            assert_eq!(sample.at_beat(4.0, 4.0, 0), 0.0);
         }
     }
 

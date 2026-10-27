@@ -1,6 +1,6 @@
 [package]
 name = "junglizer"
-version = "0.9.0-beta.1"
+version = "0.9.1-beta.2"
 edition = "2024"
 
 [lib]
@@ -43,8 +43,11 @@ truce-vst3 = { version = "6.3", optional = true }
 truce-au = { version = "6.3", optional = true }
 truce-standalone = { version = "6.3", features = ["gui"], optional = true }
 clap-sys = { version = "0.5", optional = true }
-hound = "3.5"
 png = "0.18"
+crossbeam-queue = "0.3"
+symphonia = { version = "0.6", default-features = false, features = ["wav", "aiff", "pcm", "mp3"] }
+rfd = "0.17"
+dirs = "7"
 
 # Custom profile for `cargo truce install --shell`. The shell-mode
 # build (`cargo build --profile shell --features ...,shell`) lands the
@@ -54,3 +57,13 @@ png = "0.18"
 # DSP perf parity.
 [profile.shell]
 inherits = "release"
+
+[dev-dependencies]
+hound = "3.5"
+
+# Vendored, patched copy of truce-egui 6.3.0 that forwards baseview's file
+# drag-and-drop events to egui (upstream drops them). See
+# vendor/truce-egui/src/editor.rs ("junglizer patch: file drop") and
+# docs/upstream/truce-egui-file-drop.md. Remove once upstream ships the fix.
+[patch.crates-io]
+truce-egui = { path = "vendor/truce-egui" }

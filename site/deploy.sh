@@ -3,11 +3,11 @@
 # Pulls release zips from the private GitHub repo using YOUR local `gh` login,
 # then rsyncs the site (plus downloads/) to the Ubuntu server.
 #
-# Usage:  ./site/deploy.sh [tag]        e.g. ./site/deploy.sh v0.9.0-beta.1
+# Usage:  ./site/deploy.sh [tag]        e.g. ./site/deploy.sh v0.9.1-beta.2
 # Needs:  gh (logged in: `gh auth status`), rsync, SSH access to the server.
 set -euo pipefail
 
-TAG="${1:-v0.9.0-beta.1}"
+TAG="${1:-v0.9.1-beta.2}"
 REPO="mrballistic/junglizer"
 SERVER="${SERVER:-toddgreco@mrballistic.com}"
 REMOTE_DIR="${REMOTE_DIR:-/var/www/getjunglizer.com}"
