@@ -157,6 +157,19 @@ fn fixture(
         ));
         editor.message = "MIDI saved to ~/Music/Junglizer/Exports. Drag it onto this track, then choose MIDI region.".into();
     }
+    if name == "export-success-long" {
+        let full = r"C:\Users\averylongusername\Music\Junglizer\Exports";
+        editor.export_path = Some(PathBuf::from(format!(r"{full}\Junglizer-1.mid")));
+        // What a Windows build shows (this host splits paths on '/' only).
+        let dir = r"…\Music\Junglizer\Exports";
+        editor.message = format!(
+            "MIDI saved to {dir}; phrase frozen. Drag it onto this track, then choose MIDI region."
+        )
+        .into();
+    }
+    if name == "loaded-long" {
+        editor.message = "Loaded a-very-long-sample-pack-folder_amen-break-remix-final-FINAL-v2-174bpm.wav: 16 beats · 174.0 BPM. Use ½ or ×2 if the tempo is off.".into();
+    }
     if name == "export-failure" {
         editor.message =
             "Couldn’t save MIDI. Check write access to ~/Music/Junglizer/Exports and try again."
@@ -282,6 +295,8 @@ fn render_editor_states() {
         "missing-samples",
         "export-success",
         "export-failure",
+        "export-success-long",
+        "loaded-long",
         "user-16-beats",
         "blank-slot",
         "missing",
@@ -456,4 +471,22 @@ fn a_refused_first_run_choice_keeps_the_prompt_up() {
     assert!(editor.first_run);
     assert_eq!(*editor.state.get(), before);
     assert!(editor.message.contains("couldn’t read"));
+}
+
+#[test]
+fn short_dir_collapses_home_or_keeps_the_last_three_parts() {
+    use std::path::Path;
+    let dir = Path::new("/Users/dj/Music/Junglizer/Exports");
+    assert_eq!(
+        crate::ui::short_dir(dir, Some(Path::new("/Users/dj")), false),
+        "~/Music/Junglizer/Exports"
+    );
+    assert_eq!(
+        crate::ui::short_dir(dir, None, false),
+        "/Users/dj/Music/Junglizer/Exports"
+    );
+    assert_eq!(
+        crate::ui::short_dir(Path::new("a/b/c/d/Music/Junglizer/Exports"), None, true),
+        "…\\Music\\Junglizer\\Exports"
+    );
 }
