@@ -144,11 +144,33 @@ compatibility. Don't use aubio, which is GPL-3 and would force Junglizer's licen
   **80 to 195 BPM**. Todd lowered the minimum from 8 beats to 4 after the loop test (one-bar
   cuts were being refused). Todd first said 199 as the ceiling, then wrote 80–195 for the drop UI; the
   design uses 195 throughout so the rule matches what the UI promises.
-- **Tempo rule (Todd):** always assume the fastest tempo that fits. For each whole-bar beat count
-  from 4 to 32 (4, 8, …, 32), compute BPM = beats × 60 / duration, and take the largest BPM that's
-  195 or below. Accept it if it's 80 or above.
-- **Refusal:** if no whole-bar count lands in 80–195 BPM, refuse the file with a short, specific
-  message (too short, too long, or not a whole number of bars), and leave the slot unchanged.
+- **Filename hint first (Todd, after the loop test):** sample packs put the tempo in the
+  filename (`KTB1_114_ThinkBreak…`, `AJ_170_Drum_Loop…`). If the name carries a BPM in 80–195
+  and that BPM makes the file a whole number of bars (within the trim tolerance), use it:
+  beats = BPM × duration / 60.
+  - **More than 32 beats at the named tempo refuses the file** (Todd: “refuse longer than
+    32 beats”), rather than misreading it at half speed.
+  - A named BPM that doesn't fit whole bars, or falls outside 80–195, is ignored, and the
+    fastest-fit rule below decides.
+  - The parser should find a 2–3 digit number, optionally with one decimal (`119.9`), standing
+    alone between separators or followed by “bpm”. The builder picks the exact pattern; it must
+    not read bar or take numbers such as `Bar_01` or `Break 2`.
+- **Fastest fit, when there's no usable hint (Todd):** always assume the fastest tempo that
+  fits. For each whole-bar beat count from 4 to 32 (4, 8, …, 32), compute BPM = beats × 60 /
+  duration, and take the largest BPM that's 195 or below. Accept it if it's 80 or above.
+  - Known limit: with no BPM in the name, a loop longer than 32 beats can't be told apart from a
+    half-speed loop of 32 beats or fewer, so it's misread rather than refused. Half/double can't
+    fix that either, so it's accepted as-is.
+- **Untrimmed files (Todd):** a file that isn't really a whole number of bars (an untrimmed vinyl
+  rip, say) is the uploader's problem. If the rule accepts it, it plays as read; no extra
+  detection.
+- **Loop test:** `tools/tempo/check_tempo_rule.py` runs this rule over folders of named loops
+  (`--no-hint` for fastest fit only). Against 397 of Todd's loops: 378 read correctly, the 7
+  loops longer than 32 beats are refused, 1 untrimmed vinyl rip is misread, and 11 have no BPM in
+  the name to check against.
+- **Refusal:** if no whole-bar count lands in 80–195 BPM, or the named tempo puts the file past
+  32 beats, refuse the file with a short, specific message (too short, too long, or not a whole
+  number of bars), and leave the slot unchanged.
 - **BPM display:** non-integer tempos are fine (a loop can be 172.4 BPM); show one decimal.
 - **Tolerance:** allow a small trim tolerance on the length, about 1% or a few milliseconds.
   The builder chooses the exact figure.

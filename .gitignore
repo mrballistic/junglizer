@@ -25,3 +25,4 @@
 
 # Release zips pulled by site/deploy.sh
 /site/downloads/
+.superpowers/
