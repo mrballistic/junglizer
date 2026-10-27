@@ -241,6 +241,19 @@ fn fixture(
     if name == "first-run" {
         editor.first_run = true;
     }
+    if name == "fader-thicc" {
+        params.set_normalized(P::ThinThicc.into(), 0.85);
+    }
+    if name == "fader-thin" {
+        params.set_normalized(P::ThinThicc.into(), 0.2);
+    }
+    if name == "undo-available" {
+        editor.fill_bar(1, &ctx);
+    }
+    if name == "mode-live" {
+        // Live, stopped: waiting for the first phrase, so Frozen waits too.
+        editor.state.update(|s| s.live_enabled = true);
+    }
     if name == "empty" {
         // Everything unloaded: no slot can sound.
         editor.state.update(|s| {
@@ -389,6 +402,10 @@ fn render_editor_states() {
         "first-run",
         "empty",
         "amen-modal",
+        "fader-thicc",
+        "fader-thin",
+        "undo-available",
+        "mode-live",
     ] {
         if only.as_deref().is_some_and(|o| o != name) {
             continue;
@@ -578,4 +595,107 @@ fn short_dir_collapses_home_or_keeps_the_last_three_parts() {
         crate::ui::short_dir(Path::new("a/b/c/d/Music/Junglizer/Exports"), None, true),
         "…\\Music\\Junglizer\\Exports"
     );
+}
+
+#[test]
+fn fill_then_undo_restores_the_exact_placements() {
+    let (mut ui, params, ctx) = fixture("selected");
+    let before = ui.state.get().clone();
+    ui.fill_bar(1, &ctx);
+    assert_eq!(params.fill_bar.value(), 2, "Fill sets the Fill bar param");
+    assert_ne!(before.placements, ui.state.get().placements);
+    assert_eq!(ui.undo_label(), Some("Fill bar 2"));
+    assert!(ui.undo());
+    assert_eq!(before.placements, ui.state.get().placements);
+    assert_eq!(before.seed, ui.state.get().seed);
+    assert_eq!(ui.undo_label(), None, "undo is single-use");
+    assert!(!ui.undo());
+}
+
+#[test]
+fn remove_then_undo_restores_the_placement() {
+    let (mut ui, _, _) = fixture("selected");
+    let before = ui.state.get().placements;
+    assert!(ui.remove_placement(5));
+    assert!(
+        !ui.state
+            .get()
+            .placements
+            .iter()
+            .any(|p| p.active && p.start_slot == 5)
+    );
+    assert_eq!(ui.undo_label(), Some("Remove 2:03"));
+    assert!(ui.undo());
+    assert_eq!(before, ui.state.get().placements);
+    // A locked placement isn't removed, so there's nothing to undo.
+    assert!(!ui.remove_placement(10));
+    assert_eq!(ui.undo_label(), None);
+}
+
+#[test]
+fn an_intervening_edit_clears_the_undo() {
+    let (mut ui, _, ctx) = fixture("selected");
+    ui.fill_bar(3, &ctx);
+    let first = ui
+        .state
+        .get()
+        .placements
+        .iter()
+        .find(|p| p.active && p.start_slot == 0)
+        .copied()
+        .unwrap();
+    assert!(ui.edit_placement(first, |p| p.bit_depth = 8));
+    let after_edit = ui.state.get().placements;
+    assert_eq!(ui.undo_label(), None);
+    assert!(!ui.undo());
+    assert_eq!(after_edit, ui.state.get().placements, "newer work is kept");
+}
+
+#[test]
+fn undo_is_unavailable_while_frozen_or_live() {
+    for freeze in [true, false] {
+        let (mut ui, _, ctx) = fixture("selected");
+        ui.fill_bar(1, &ctx);
+        // Without a version bump, so only the mode guard can refuse it.
+        ui.state.update(|s| {
+            if freeze {
+                s.frozen = true;
+            } else {
+                s.live_enabled = true;
+            }
+        });
+        let held = ui.state.get().placements;
+        assert_eq!(ui.undo_label(), None);
+        assert!(!ui.undo());
+        assert_eq!(held, ui.state.get().placements);
+    }
+    for name in ["frozen-midi", "live-1"] {
+        let (mut ui, _, ctx) = fixture(name);
+        let before = ui.state.get().placements;
+        ui.fill_bar(1, &ctx);
+        assert!(!ui.remove_placement(5));
+        assert_eq!(before, ui.state.get().placements);
+        assert_eq!(ui.undo_label(), None);
+    }
+}
+
+#[test]
+fn a_stale_state_snapshot_hides_the_undo_without_dropping_it() {
+    // The host publishes editor state once per audio block, so the frame
+    // after a Fill can still sync the state from before it.
+    let (mut ui, _, ctx) = fixture("selected");
+    let before = ui.state.get().clone();
+    ui.fill_bar(1, &ctx);
+    let filled = ui.state.get().clone();
+    ui.state.update(|s| *s = before.clone());
+    ui.prune_undo();
+    assert_eq!(ui.undo_label(), None);
+    ui.state.update(|s| *s = filled.clone());
+    ui.prune_undo();
+    assert_eq!(ui.undo_label(), Some("Fill bar 2"));
+    // A newer version, from any other edit, drops it for good.
+    ui.state.update(|s| s.touch());
+    ui.prune_undo();
+    ui.state.update(|s| *s = filled.clone());
+    assert_eq!(ui.undo_label(), None);
 }

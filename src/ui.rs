@@ -24,6 +24,11 @@ const CREDIT: &str =
     "Built-in breaks played on the Salamander Drumkit by Alexander Holm (CC BY-SA 3.0)";
 const INITIAL_MESSAGE: &str =
     "Choose a source slice, then click a player slot. You can drag it there too.";
+const UNDO_HINT: &str = if cfg!(target_os = "macos") {
+    "Cmd+Z"
+} else {
+    "Ctrl+Z"
+};
 const SOURCE_COLORS: [Color32; 4] = [
     Color32::from_rgb(238, 151, 87),
     Color32::from_rgb(105, 205, 193),
@@ -59,6 +64,32 @@ pub struct JunglizerUi {
     message: Cow<'static, str>,
     export_path: Option<PathBuf>,
     wordmark: Option<egui::TextureHandle>,
+    /// The single undo for the last Fill or Remove.
+    undo: Option<Undo>,
+}
+
+/// What a Fill or Remove changes, copied before it runs. `after` is the
+/// state version the action wrote; any other change moves it, and the
+/// undo no longer applies.
+struct Undo {
+    label: String,
+    placements: [StepPlacement; crate::edit_state::MAX_STEPS],
+    seed: u64,
+    /// The version and placements the action left behind.
+    after: u64,
+    after_placements: [StepPlacement; crate::edit_state::MAX_STEPS],
+}
+
+impl Undo {
+    fn of(state: &EditState, label: String) -> Self {
+        Self {
+            label,
+            placements: state.placements,
+            seed: state.seed,
+            after: state.version,
+            after_placements: state.placements,
+        }
+    }
 }
 
 impl JunglizerUi {
@@ -84,6 +115,7 @@ impl JunglizerUi {
             message: INITIAL_MESSAGE.into(),
             export_path: None,
             wordmark: None,
+            undo: None,
         }
     }
 
@@ -438,6 +470,33 @@ impl JunglizerUi {
             if active {
                 child.colored_label(ACCENT, "Now");
             }
+            child.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let lock = ui
+                    .add_enabled(!locked, egui::Button::new("").min_size(vec2(26.0, 22.0)))
+                    .on_hover_text(format!("Lock bar {}’s slices", bar + 1))
+                    .on_disabled_hover_text(
+                        "Unfreeze or stop live variations before locking a bar.",
+                    );
+                padlock(
+                    ui.painter(),
+                    lock.rect.center() - vec2(4.0, 1.0),
+                    if locked { MUTED } else { INK },
+                );
+                if lock.clicked() {
+                    self.lock_bar(bar);
+                }
+                if ui
+                    .add_enabled(!locked, egui::Button::new("Fill"))
+                    .on_hover_text(format!("Suggest a fill for bar {}", bar + 1))
+                    .on_disabled_hover_text(
+                        "Unfreeze or stop live variations before suggesting a fill.",
+                    )
+                    .clicked()
+                {
+                    self.fill_bar(bar, context);
+                }
+            });
             // The part of the break this bar plays: breaks repeat from the
             // top of the phrase, and a blank or silent slot falls back.
             let Some(source) = self.ghost_slot(((bar_sources[bar] - 1) as usize).min(3)) else {
@@ -527,14 +586,7 @@ impl JunglizerUi {
                     Stroke::new(1.0_f32, INK),
                     StrokeKind::Inside,
                 );
-                let at = block.right_bottom() - vec2(14.0, 15.0);
-                paint.rect_filled(Rect::from_min_size(at, vec2(8.0, 7.0)), 1.0, WELL);
-                paint.rect_stroke(
-                    Rect::from_min_size(at + vec2(1.0, -5.0), vec2(6.0, 7.0)),
-                    2.0,
-                    Stroke::new(1.5_f32, WELL),
-                    StrokeKind::Inside,
-                );
+                padlock(&paint, block.right_bottom() - vec2(14.0, 15.0), WELL);
             }
             ui.painter().rect_stroke(
                 block,
@@ -653,7 +705,7 @@ impl JunglizerUi {
                 item.active && item.start_slot <= slot && slot < item.start_slot + item.span_slots
             }) {
                 response.clone().on_hover_text(if self.state.get().frozen {
-                    "Phrase frozen. Use Unfreeze for editing beside the player."
+                    "Phrase frozen. Choose Edit under Phrase to change it."
                 } else if item.locked {
                     "This slice is locked against replacement. Select it to change Lock, or use Unlock all slices."
                 } else {
@@ -712,82 +764,95 @@ impl JunglizerUi {
             );
             ui.colored_label(
                 MUTED,
-                format!(
-                    "slots {}–{}",
-                    current.start_slot + 1,
-                    current.start_slot + current.span_slots
-                ),
+                if current.span_slots == 1 {
+                    format!("· slot {}", current.start_slot + 1)
+                } else {
+                    format!(
+                        "· slots {}–{}",
+                        current.start_slot + 1,
+                        current.start_slot + current.span_slots
+                    )
+                },
             );
-            let mut locked = current.locked;
-            if ui
-                .checkbox(&mut locked, "Lock")
-                .on_hover_text(
-                    "Protect this placement from fills and replacement; separate from Freeze.",
-                )
-                .changed()
-                && self.edit_placement(current, |p| p.locked = locked)
-            {
-                context.automate(P::EditLock, f64::from(locked as u8));
-            }
-            if ui
-                .add_enabled(!current.locked, egui::Button::new("Remove"))
-                .on_disabled_hover_text("Uncheck Lock before removing.")
-                .clicked()
-            {
-                self.state.update(|s| {
-                    s.remove_at_slot(slot);
-                });
-                self.selected_slot = None;
-            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add_enabled(!current.locked, egui::Button::new("Remove"))
+                    .on_hover_text(format!("Remove this slice. {UNDO_HINT} undoes it."))
+                    .on_disabled_hover_text("Uncheck Lock before removing.")
+                    .clicked()
+                {
+                    self.remove_placement(slot);
+                }
+                let mut locked = current.locked;
+                if ui
+                    .checkbox(&mut locked, "Lock")
+                    .on_hover_text(
+                        "Protect this placement from fills and replacement; separate from Freeze.",
+                    )
+                    .changed()
+                    && self.edit_placement(current, |p| p.locked = locked)
+                {
+                    context.automate(P::EditLock, f64::from(locked as u8));
+                }
+            });
         });
         ui.horizontal(|ui| {
-            ui.label("Length");
+            field_label(ui, "Length", 52.0);
             let mut span = current.span_slots;
-            if ui
-                .add(
-                    egui::DragValue::new(&mut span)
-                        .range(1..=self.state.get().player_slots - current.start_slot)
-                        .suffix(" slots"),
-                )
-                .changed()
-                && self.edit_placement(current, |p| p.span_slots = span)
+            let max = self.state.get().player_slots - current.start_slot;
+            let suffix = if span == 1 { " slot" } else { " slots" };
+            if stepper(
+                ui,
+                &mut span,
+                1..=max,
+                suffix,
+                "Slice length in player slots",
+            ) && self.edit_placement(current, |p| p.span_slots = span)
             {
                 context.automate(P::EditLength, f64::from(span - 1) / 31.0);
             }
-            ui.separator();
-            ui.label("Speed");
-            for (mode, label) in [(0, "Original"), (1, "Fit to length")] {
-                if ui
-                    .selectable_label(current.mode == mode, label)
-                    .on_hover_text("Fit to length changes playback speed and pitch.")
-                    .clicked()
-                    && self.edit_placement(current, |p| p.mode = mode)
-                {
-                    context.automate(P::EditSpeed, f64::from(mode));
-                }
+            ui.add_space(14.0);
+            field_label(ui, "Speed", 66.0);
+            if let Some(mode) = segmented(
+                ui,
+                current.mode,
+                &[(0, "Original", true, ""), (1, "Fit (pitch)", true, "")],
+                None,
+            ) && mode != current.mode
+                && self.edit_placement(current, |p| p.mode = mode)
+            {
+                context.automate(P::EditSpeed, f64::from(mode));
             }
         });
         ui.horizontal(|ui| {
-            ui.label("Bit depth");
+            field_label(ui, "Bits", 52.0);
             let mut bits = current.bit_depth;
-            if ui
-                .add(egui::DragValue::new(&mut bits).range(1..=16).suffix(" bit"))
-                .on_hover_text("16 bit is clean; lower values crush the sound.")
-                .changed()
-                && self.edit_placement(current, |p| p.bit_depth = bits)
+            if stepper(
+                ui,
+                &mut bits,
+                1..=16,
+                " bit",
+                "16 bit is clean; lower values crush the sound.",
+            ) && self.edit_placement(current, |p| p.bit_depth = bits)
             {
                 context.automate(P::EditBits, f64::from(bits - 1) / 15.0);
             }
-            ui.separator();
-            ui.label("Retrigger");
-            for n in [1_u8, 2, 4, 8] {
-                if ui
-                    .selectable_label(current.repeats == n, format!("{n}×"))
-                    .clicked()
-                    && self.edit_placement(current, |p| p.repeats = n)
-                {
-                    context.automate(P::EditRetriggers, f64::from(n.trailing_zeros()) / 3.0);
-                }
+            ui.add_space(14.0);
+            field_label(ui, "Retrigger", 66.0);
+            if let Some(n) = segmented(
+                ui,
+                current.repeats,
+                &[
+                    (1_u8, "1×", true, ""),
+                    (2, "2×", true, ""),
+                    (4, "4×", true, ""),
+                    (8, "8×", true, ""),
+                ],
+                None,
+            ) && n != current.repeats
+                && self.edit_placement(current, |p| p.repeats = n)
+            {
+                context.automate(P::EditRetriggers, f64::from(n.trailing_zeros()) / 3.0);
             }
         });
         ui.colored_label(
@@ -798,6 +863,185 @@ impl JunglizerUi {
                 "Original speed plays the slice once per retrigger."
             },
         );
+    }
+
+    fn placed_slice(&mut self, ui: &mut Ui, context: &PluginContext<JunglizerParams>) {
+        let state = self.state.get();
+        let editable = !state.frozen && !state.live_enabled;
+        let has_selection = self.selected_slot.is_some_and(|slot| {
+            state
+                .placements
+                .iter()
+                .any(|p| p.active && p.start_slot <= slot && slot < p.start_slot + p.span_slots)
+        });
+        if editable && has_selection {
+            self.inspector(ui, context);
+        } else {
+            self.placed_slice_empty(ui);
+        }
+    }
+
+    /// The Placed slice panel with nothing editable selected: what a click
+    /// would place, or why the player is closed to edits.
+    fn placed_slice_empty(&self, ui: &mut Ui) {
+        ui.strong("Placed slice");
+        ui.add_space(8.0);
+        let state = self.state.get();
+        let name = format!("{}:{:02}", self.selected_loop + 1, self.selected_slice + 1);
+        if state.frozen {
+            ui.label("Phrase frozen. Choose Edit under Phrase to change it.");
+            ui.colored_label(MUTED, "Individual slice locks are preserved.");
+        } else if state.live_enabled {
+            ui.label("Live variations are running.");
+            ui.colored_label(MUTED, "Choose Frozen to keep the phrase you hear.");
+        } else if self.shows_break_target() {
+            ui.label("Load a break above to start placing slices.");
+        } else if state
+            .slice(self.selected_loop, self.selected_slice)
+            .is_none()
+        {
+            ui.label(format!(
+                "{name} is muted or quiet. Choose another source slice."
+            ));
+        } else {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.label("Next: ");
+                ui.colored_label(SOURCE_COLORS[self.selected_loop], name);
+                ui.label(". Click a slot or press Enter.");
+            });
+            ui.colored_label(MUTED, "Or drag a source pad onto the player.");
+        }
+    }
+
+    /// Locks every placement that touches `bar`, so fills keep them.
+    fn lock_bar(&mut self, bar: usize) {
+        if self.state.get().frozen || self.state.get().live_enabled {
+            return;
+        }
+        self.state.update(|state| {
+            let start = (bar * state.player_slots as usize).div_ceil(4);
+            let end = ((bar + 1) * state.player_slots as usize).div_ceil(4);
+            for item in &mut state.placements {
+                if item.active
+                    && (item.start_slot as usize) < end
+                    && start < item.start_slot as usize + item.span_slots as usize
+                {
+                    item.locked = true;
+                }
+            }
+            state.touch();
+        });
+        self.message = format!("Bar {} locked. Fills will preserve these slices.", bar + 1).into();
+    }
+
+    /// Suggests a fill for `bar` from the selected source break, as the
+    /// footer's Suggest a fill did, keeping a copy for Undo.
+    fn fill_bar(&mut self, bar: usize, context: &PluginContext<JunglizerParams>) {
+        if self.state.get().frozen || self.state.get().live_enabled || bar >= 4 {
+            return;
+        }
+        self.selected_bar = bar;
+        context.automate(P::FillBar, bar as f64 / 3.0);
+        let snapshot = Undo::of(self.state.get(), format!("Fill bar {}", bar + 1));
+        let source = self.selected_loop;
+        let mut count = 0;
+        self.state
+            .update(|state| count = suggest_bar(state, bar, source));
+        self.keep_undo(snapshot);
+        self.message = if count > 0 {
+            "New fill ready. Lock slices you want to keep, then try another."
+        } else {
+            "No active source slices, or this bar is fully locked."
+        }
+        .into();
+    }
+
+    /// Removes the unlocked placement covering `slot`, keeping a copy for
+    /// Undo. False if there was nothing to remove.
+    fn remove_placement(&mut self, slot: u8) -> bool {
+        let state = self.state.get();
+        if state.frozen || state.live_enabled {
+            return false;
+        }
+        let Some(item) = state
+            .placements
+            .iter()
+            .find(|p| p.active && p.start_slot <= slot && slot < p.start_slot + p.span_slots)
+            .copied()
+            .filter(|p| !p.locked)
+        else {
+            return false;
+        };
+        let snapshot = Undo::of(
+            state,
+            format!(
+                "Remove {}:{:02}",
+                item.source_loop + 1,
+                item.source_slice + 1
+            ),
+        );
+        let mut removed = false;
+        self.state.update(|s| removed = s.remove_at_slot(slot));
+        if removed {
+            self.keep_undo(snapshot);
+            self.selected_slot = None;
+        }
+        removed
+    }
+
+    /// Holds `snapshot` as the one undo, tied to the version just written.
+    fn keep_undo(&mut self, mut snapshot: Undo) {
+        snapshot.after = self.state.get().version;
+        snapshot.after_placements = self.state.get().placements;
+        self.undo = Some(snapshot);
+    }
+
+    /// The pending undo's label, while it can still restore: not frozen or
+    /// live, and the state is exactly what the action left.
+    fn undo_label(&self) -> Option<&str> {
+        let state = self.state.get();
+        self.undo
+            .as_ref()
+            .filter(|u| {
+                u.after == state.version
+                    && u.after_placements == state.placements
+                    && !state.frozen
+                    && !state.live_enabled
+            })
+            .map(|u| u.label.as_str())
+    }
+
+    /// Drops the undo once anything else has changed the state: a newer
+    /// version, or different placements at the same one. An older version
+    /// is the host's snapshot from before the action, which the next block
+    /// replaces, so the undo waits rather than vanishing.
+    fn prune_undo(&mut self) {
+        let state = self.state.get();
+        if self.undo.as_ref().is_some_and(|u| {
+            state.version > u.after
+                || (state.version == u.after && state.placements != u.after_placements)
+        }) {
+            self.undo = None;
+        }
+    }
+
+    /// Restores the copy taken before the last Fill or Remove. Single use.
+    fn undo(&mut self) -> bool {
+        self.prune_undo();
+        if self.undo_label().is_none() {
+            return false;
+        }
+        let Some(snapshot) = self.undo.take() else {
+            return false;
+        };
+        self.state.update(|s| {
+            s.placements = snapshot.placements;
+            s.seed = snapshot.seed;
+            s.touch();
+        });
+        self.message = format!("Undid {}.", snapshot.label).into();
+        true
     }
 
     fn edit_placement(
@@ -956,6 +1200,14 @@ impl EditorUi<JunglizerParams> for JunglizerUi {
         }
         self.poll_pending_load(ui.ctx());
         self.refresh_slot_audio();
+        self.prune_undo();
+        // Cmd+Z on macOS, Ctrl+Z elsewhere; a field being typed in keeps it.
+        if !ui.ctx().egui_wants_keyboard_input()
+            && ui
+                .input(|i| i.modifiers.command && !i.modifiers.shift && i.key_pressed(egui::Key::Z))
+        {
+            self.undo();
+        }
         self.drop_targets.clear();
         let (hovered_files, dropped_files) = ui
             .ctx()
@@ -979,71 +1231,103 @@ impl EditorUi<JunglizerParams> for JunglizerUi {
         };
         apply_style(ui);
         ui.painter().rect_filled(ui.max_rect(), 0.0, CANVAS);
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            egui::Frame::new().inner_margin(14.0).show(ui, |ui| {
-                self.header(ui, context);
-                ui.add_space(4.0);
-                self.sources_ui(ui, context);
-                ui.add_space(3.0);
-                ui.separator();
-                self.player_header(ui, context, live.as_ref());
-                let dimmed = self.shows_break_target();
-                ui.scope(|ui| {
-                    if dimmed {
-                        // Drawn faded and deaf to clicks until there's a break.
-                        ui.disable();
-                        ui.multiply_opacity(0.7);
-                    }
-                    self.player(ui, context, live.as_ref());
-                });
-                ui.add_space(3.0);
-                ui.columns(2, |columns| {
-                    egui::Frame::new().fill(SURFACE).corner_radius(4.0).inner_margin(10.0).show(&mut columns[0], |ui| {
-                        ui.set_min_width(ui.available_width());
-                        ui.set_min_height(118.0);
-                        let editable = !self.state.get().frozen && !self.state.get().live_enabled;
-                        let has_selection = self.selected_slot.is_some_and(|slot| self.state.get().placements.iter().any(|p| p.active && p.start_slot <= slot && slot < p.start_slot + p.span_slots));
-                        if editable && has_selection { self.inspector(ui, context); }
-                        else {
-                            ui.strong("Placed slice");
-                            ui.add_space(12.0);
-                            ui.colored_label(MUTED, if self.state.get().frozen { "Phrase frozen. Unfreeze above to edit. Individual locks are preserved." } else if self.state.get().live_enabled { "Live variations are running. Freeze the phrase you hear to keep and refine it." } else { "Select a placement to edit its length, speed, bit depth and retriggers." });
-                            ui.colored_label(MUTED,"Empty slots keep playing the bar’s ghost break.");
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                egui::Frame::new().inner_margin(14.0).show(ui, |ui| {
+                    self.header(ui, context);
+                    ui.add_space(4.0);
+                    self.sources_ui(ui, context);
+                    ui.add_space(3.0);
+                    ui.separator();
+                    self.player_header(ui, context, live.as_ref());
+                    let dimmed = self.shows_break_target();
+                    ui.scope(|ui| {
+                        if dimmed {
+                            // Drawn faded and deaf to clicks until there's a break.
+                            ui.disable();
+                            ui.multiply_opacity(0.7);
+                        }
+                        self.player(ui, context, live.as_ref());
+                    });
+                    ui.add_space(3.0);
+                    ui.horizontal_top(|ui| {
+                        // Placed slice takes about 62% and Phrase the rest.
+                        let gap = 8.0;
+                        ui.spacing_mut().item_spacing.x = gap;
+                        let total = ui.available_width() - gap;
+                        let left = (total * 0.62).floor();
+                        for (width, placed) in [(left, true), (total - left, false)] {
+                            ui.allocate_ui_with_layout(
+                                vec2(width, 0.0),
+                                egui::Layout::top_down(egui::Align::Min),
+                                |ui| {
+                                    egui::Frame::new()
+                                        .fill(SURFACE)
+                                        .corner_radius(4.0)
+                                        .inner_margin(10.0)
+                                        .show(ui, |ui| {
+                                            ui.spacing_mut().item_spacing.x = 8.0;
+                                            ui.set_width(width - 20.0);
+                                            ui.set_min_height(118.0);
+                                            if placed {
+                                                self.placed_slice(ui, context);
+                                            } else {
+                                                self.actions(ui, context, live.as_ref());
+                                            }
+                                        });
+                                },
+                            );
                         }
                     });
-                    egui::Frame::new().fill(SURFACE).corner_radius(4.0).inner_margin(10.0).show(&mut columns[1], |ui| {
-                        ui.set_min_width(ui.available_width());
-                        ui.set_min_height(118.0);
-                        self.actions(ui, context, live.as_ref());
-                    });
-                });
-                ui.add_space(2.0);
-                ui.horizontal(|ui| {
-                    let initial = self.message == INITIAL_MESSAGE;
-                    let message = if initial && self.state.get().frozen { "Frozen phrase repeats exactly. Unfreeze above to edit." }
-                        else if initial && self.state.get().live_enabled { "A new phrase every four bars. Freeze the one you want to keep." }
-                        else { &self.message };
-                    // Credit first, fixed at the right, then the reveal button;
-                    // the message takes what's left and truncates, so nothing overlaps.
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new(CREDIT).small().color(MUTED));
-                        let path = self.export_path.clone();
-                        if let Some(path) = &path {
-                            if ui.small_button(crate::platform::REVEAL_LABEL).clicked() {
-                                crate::platform::reveal(path);
+                    ui.add_space(2.0);
+                    let mut undo_now = false;
+                    ui.horizontal(|ui| {
+                        let initial = self.message == INITIAL_MESSAGE;
+                        let message = if initial && self.state.get().frozen {
+                            "Frozen phrase repeats exactly. Choose Edit to change it."
+                        } else if initial && self.state.get().live_enabled {
+                            "A new phrase every four bars. Choose Frozen to keep the one you hear."
+                        } else {
+                            &self.message
+                        };
+                        // Credit first, fixed at the right, then the reveal button;
+                        // the message takes what's left and truncates, so nothing overlaps.
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(egui::RichText::new(CREDIT).small().color(MUTED));
+                            let path = self.export_path.clone();
+                            if let Some(path) = &path {
+                                if ui.small_button(crate::platform::REVEAL_LABEL).clicked() {
+                                    crate::platform::reveal(path);
+                                }
                             }
-                        }
-                        let response = ui.add(egui::Label::new(egui::RichText::new(message).color(ACCENT)).truncate());
-                        // The whole message, then the full export path under it.
-                        match path {
-                            Some(path) => { response.on_hover_text(format!("{message}\n{}", path.display())); }
-                            None => { response.on_hover_text(message); }
-                        }
+                            let undo = self.undo_label().map(|label| format!("Undo {label}"));
+                            if let Some(undo) = undo
+                                && ui.small_button(undo).on_hover_text(UNDO_HINT).clicked()
+                            {
+                                undo_now = true;
+                            }
+                            let response = ui.add(
+                                egui::Label::new(egui::RichText::new(message).color(ACCENT))
+                                    .truncate(),
+                            );
+                            // The whole message, then the full export path under it.
+                            match path {
+                                Some(path) => {
+                                    response
+                                        .on_hover_text(format!("{message}\n{}", path.display()));
+                                }
+                                None => {
+                                    response.on_hover_text(message);
+                                }
+                            }
+                        });
                     });
+                    if undo_now {
+                        self.undo();
+                    }
                 });
-
             });
-        });
         self.handle_file_drop(ui.ctx(), &hovered_files, &dropped_files);
         self.unload_modal(ui.ctx());
     }
@@ -1151,13 +1435,49 @@ fn tone_crossfader(ui: &mut Ui, context: &PluginContext<JunglizerParams>) {
         (rect.left() + half)..=(rect.right() - half),
         (amount + 1.0) * 0.5,
     );
+    let center = rect.center().x;
+    // Lime from the Dry detent to the cap, at the rail's own height.
+    if amount != 0.0 {
+        let rail = 12.0 / 2.0;
+        painter.rect_filled(
+            Rect::from_min_max(
+                Pos2::new(center.min(x), rect.center().y - rail),
+                Pos2::new(center.max(x), rect.center().y + rail),
+            ),
+            0.0,
+            ACCENT,
+        );
+    }
+    // Crossing Dry, in either direction, kicks the marks out to 6 px; they
+    // ease back to 3 px over 150 ms. Nothing animates at rest.
+    let sign = if amount > 0.0 {
+        1_i8
+    } else if amount < 0.0 {
+        -1
+    } else {
+        0
+    };
+    let now = ui.input(|i| i.time);
+    let id = egui::Id::new("thin-thicc-detent");
+    let (last, crossed) = ui
+        .memory(|m| m.data.get_temp::<(i8, f64)>(id))
+        .unwrap_or((sign, f64::NEG_INFINITY));
+    let crossed = if last != sign { now } else { crossed };
+    ui.memory_mut(|m| m.data.insert_temp(id, (sign, crossed)));
+    let t = ((now - crossed) / 0.15) as f32;
+    let tick = if (0.0..1.0).contains(&t) {
+        ui.ctx().request_repaint();
+        3.0 + 3.0 * (1.0 - t) * (1.0 - t)
+    } else {
+        3.0
+    };
     // Center detent marks remain visible above and below the cap.
-    for y in [rect.top(), rect.bottom() - 3.0] {
+    for (from, to) in [
+        (rect.top(), rect.top() + tick),
+        (rect.bottom() - tick, rect.bottom()),
+    ] {
         painter.line_segment(
-            [
-                Pos2::new(rect.center().x, y),
-                Pos2::new(rect.center().x, y + 3.0),
-            ],
+            [Pos2::new(center, from), Pos2::new(center, to)],
             Stroke::new(2.0_f32, ACCENT),
         );
     }
@@ -1178,20 +1498,71 @@ fn tone_crossfader(ui: &mut Ui, context: &PluginContext<JunglizerParams>) {
     response.on_hover_text(
         "Thin to Thicc · center is Dry · double-click for Dry · arrow keys when focused",
     );
-    let (labels, _) = ui.allocate_exact_size(vec2(280.0, 12.0), Sense::hover());
+    let (labels, _) = ui.allocate_exact_size(vec2(280.0, 16.0), Sense::hover());
+    let font = egui::FontId::proportional(11.0);
     for (x, align, label) in [
         (labels.left(), egui::Align2::LEFT_TOP, "Thin"),
         (labels.center().x, egui::Align2::CENTER_TOP, "Dry"),
-        (labels.right(), egui::Align2::RIGHT_TOP, "Thicc"),
     ] {
         ui.painter().text(
-            Pos2::new(x, labels.top()),
+            Pos2::new(x, labels.top() + 1.0),
             align,
             label,
-            egui::FontId::proportional(11.0),
+            font.clone(),
             MUTED,
         );
     }
+    dymo_label(ui.painter(), labels.right(), labels.top(), "Thicc", font);
+}
+
+/// Embossed label tape, Dymo style: a dark plastic strip with a little
+/// margin around the word, a sheen along its top edge and a shadow along
+/// its bottom, both ends cut at an angle as scissors leave it, and ivory
+/// letters over a darker copy one pixel down. The tape's right end sits at
+/// `right`.
+fn dymo_label(painter: &egui::Painter, right: f32, top: f32, text: &str, font: egui::FontId) {
+    let tape = darken(EDGE, 0.8);
+    let galley = painter.layout_no_wrap(text.to_owned(), font, INK);
+    let size = galley.size();
+    let height = size.y + 3.0;
+    let cut = 3.0;
+    let pad = 4.0;
+    let left = right - size.x - 2.0 * pad - 2.0 * cut;
+    let bottom = top + height;
+    painter.add(egui::Shape::convex_polygon(
+        vec![
+            Pos2::new(left + cut, top),
+            Pos2::new(right, top),
+            Pos2::new(right - cut, bottom),
+            Pos2::new(left, bottom),
+        ],
+        tape,
+        Stroke::NONE,
+    ));
+    // Sheen and shadow, inset so they stop at the angled cuts.
+    painter.line_segment(
+        [
+            Pos2::new(left + cut + 1.0, top + 0.5),
+            Pos2::new(right - 1.0, top + 0.5),
+        ],
+        Stroke::new(1.0_f32, EDGE),
+    );
+    painter.line_segment(
+        [
+            Pos2::new(left + 1.0, bottom - 0.5),
+            Pos2::new(right - cut - 1.0, bottom - 0.5),
+        ],
+        Stroke::new(1.0_f32, WELL),
+    );
+    let at = Pos2::new(left + cut + pad, top + 1.5);
+    painter.galley_with_override_text_color(at + vec2(0.0, 1.0), galley.clone(), WELL);
+    painter.galley(at, galley, INK);
+}
+
+/// `color` scaled toward black, keeping it opaque.
+fn darken(color: Color32, factor: f32) -> Color32 {
+    let scale = |c: u8| (f32::from(c) * factor).round() as u8;
+    Color32::from_rgb(scale(color.r()), scale(color.g()), scale(color.b()))
 }
 
 fn output_knob(ui: &mut Ui, context: &PluginContext<JunglizerParams>) {
@@ -1609,18 +1980,13 @@ impl JunglizerUi {
             ui.separator();
             if self.state.get().frozen {
                 ui.colored_label(ACCENT, "Frozen");
-                if ui.add(egui::Button::new("Unfreeze").fill(Color32::from_rgb(75, 85, 39))).clicked() {
-                    self.state.update(|s| { s.frozen = false; s.touch(); });
-                    context.automate(P::LiveVariations, 0.0);
-                    self.message = "Phrase unfrozen. Individual slice locks are preserved.".into();
-                }
             } else if let Some(phrase) = live {
                 ui.colored_label(ACCENT, format!("Live · variation {}", phrase.cycle + 1));
             } else { ui.colored_label(MUTED, if self.state.get().live_enabled { "Live · waiting for playback" } else { "Editing" }); }
             let locked = self.state.get().placements.iter().filter(|p| p.active && p.locked).count();
             if locked > 0 {
                 ui.label(format!("{locked} locked"));
-                if ui.add_enabled(!self.state.get().frozen && !self.state.get().live_enabled, egui::Button::new("Unlock all slices")).on_disabled_hover_text("Unfreeze or stop live variations first; individual locks stay separate from Freeze.").clicked() {
+                if ui.add_enabled(!self.state.get().frozen && !self.state.get().live_enabled, egui::Button::new("Unlock all slices")).on_disabled_hover_text("Choose Edit under Phrase first; individual locks stay separate from Freeze.").clicked() {
                     self.state.update(|s| s.unlock_all()); context.automate(P::EditLock, 0.0);
                     self.message = "All placed slices are unlocked.".into();
                 }
@@ -1638,109 +2004,232 @@ impl JunglizerUi {
         context: &PluginContext<JunglizerParams>,
         live: Option<&CapturedPhrase>,
     ) {
-        let editable = !self.state.get().frozen && !self.state.get().live_enabled;
+        let frozen = self.state.get().frozen;
+        let live_on = self.state.get().live_enabled;
         ui.horizontal(|ui| {
             ui.strong("Phrase");
-            ui.colored_label(MUTED, "Suggest keeps locked slices");
+            ui.colored_label(MUTED, "Fills keep locked slices");
         });
         ui.horizontal(|ui| {
-            ui.label("Fill");
-            egui::ComboBox::from_id_salt("fill-bar")
-                .width(66.0)
-                .selected_text(format!("Bar {}", self.selected_bar + 1))
-                .show_ui(ui, |ui| {
-                    for bar in 0..4 {
-                        if ui
-                            .selectable_label(self.selected_bar == bar, format!("Bar {}", bar + 1))
-                            .clicked()
-                        {
-                            self.selected_bar = bar;
-                            context.automate(P::FillBar, bar as f64 / 3.0);
-                        }
-                    }
-                });
-            if ui
-                .add_enabled(editable, egui::Button::new("Suggest a fill"))
-                .on_disabled_hover_text(
-                    "Unfreeze or stop live variations before suggesting a fill.",
-                )
-                .clicked()
-            {
-                let bar = self.selected_bar;
-                let source = self.selected_loop;
-                let mut count = 0;
-                self.state
-                    .update(|state| count = suggest_bar(state, bar, source));
-                self.message = if count > 0 {
-                    "New fill ready. Lock slices you want to keep, then try another."
-                } else {
-                    "No active source slices, or this bar is fully locked."
-                }
-                .into();
-            }
-            if ui
-                .add_enabled(editable, egui::Button::new("Lock bar"))
-                .clicked()
-            {
-                let bar = self.selected_bar;
-                self.state.update(|state| {
-                    let start = (bar * state.player_slots as usize).div_ceil(4);
-                    let end = ((bar + 1) * state.player_slots as usize).div_ceil(4);
-                    for item in &mut state.placements {
-                        if item.active
-                            && (item.start_slot as usize) < end
-                            && start < item.start_slot as usize + item.span_slots as usize
-                        {
-                            item.locked = true;
-                        }
-                    }
-                    state.touch();
-                });
-                self.message = "Bar locked. Suggestions will preserve these slices.".into();
-            }
-        });
-        ui.horizontal(|ui| {
-            let enabled = self.state.get().live_enabled;
-            if ui.add_enabled(!self.state.get().frozen, egui::Button::new(if enabled { "Stop live variations" } else { "Live variations" }).selected(enabled)).on_disabled_hover_text("Unfreeze before starting live variations.").on_hover_text("A new phrase every four bars. Stop returns to your hand-edited pattern.").clicked() {
-                self.state.update(|s| { s.live_enabled = !enabled; s.touch(); });
-                context.automate(P::LiveVariations, f64::from((!enabled) as u8));
-                self.message = if enabled { "Live stopped. Your hand-edited pattern is back." } else { "Live variations on. Freeze the phrase you want to keep." }.into();
-            }
-            if ui.add_enabled(!self.state.get().frozen && (!enabled || live.is_some()), egui::Button::new("Freeze phrase")).on_disabled_hover_text("Already frozen, or waiting for the first live phrase. Start host playback to capture a variation.").clicked() {
-                if enabled { self.freeze_live(context); }
-                else {
-                    let bars = [context.params().bar_1.value(), context.params().bar_2.value(), context.params().bar_3.value(), context.params().bar_4.value()].map(|v| (v - 1) as u8);
-                    self.state.update(|s| s.freeze_phrase(s.placements, s.slice_counts(), s.player_slots, bars));
+            field_label(ui, "Mode", 62.0);
+            let mode = if frozen {
+                2
+            } else if live_on {
+                1
+            } else {
+                0
+            };
+            let can_freeze = !live_on || live.is_some();
+            let choice = segmented(
+                ui,
+                mode,
+                &[
+                    (0, "Edit", true, ""),
+                    (1, "Live", !frozen, "Choose Edit first to leave the frozen phrase."),
+                    (
+                        2,
+                        "Frozen",
+                        frozen || can_freeze,
+                        "Waiting for the first live phrase. Start host playback to capture a variation.",
+                    ),
+                ],
+                Some(&[
+                    "Edit by hand. Leaving Frozen keeps individual slice locks.",
+                    "A new phrase every four bars.",
+                    "Hold what’s playing, live variation included, so it repeats exactly.",
+                ]),
+            );
+            match choice {
+                Some(0) if frozen => {
+                    self.state.update(|s| {
+                        s.frozen = false;
+                        s.touch();
+                    });
                     context.automate(P::LiveVariations, 0.0);
-                    self.message = "Phrase frozen. Unfreeze to edit; individual slice locks are unchanged.".into();
+                    self.message = "Phrase unfrozen. Individual slice locks are preserved.".into();
                 }
+                Some(0) if live_on => {
+                    self.state.update(|s| {
+                        s.live_enabled = false;
+                        s.touch();
+                    });
+                    context.automate(P::LiveVariations, 0.0);
+                    self.message = "Live stopped. Your hand-edited pattern is back.".into();
+                }
+                Some(1) if !live_on && !frozen => {
+                    self.state.update(|s| {
+                        s.live_enabled = true;
+                        s.touch();
+                    });
+                    context.automate(P::LiveVariations, 1.0);
+                    self.message =
+                        "Live variations on. Choose Frozen to keep the phrase you hear.".into();
+                }
+                Some(2) if !frozen => {
+                    if live_on {
+                        self.freeze_live(context);
+                    } else {
+                        let bars = [
+                            context.params().bar_1.value(),
+                            context.params().bar_2.value(),
+                            context.params().bar_3.value(),
+                            context.params().bar_4.value(),
+                        ]
+                        .map(|v| (v - 1) as u8);
+                        self.state.update(|s| {
+                            s.freeze_phrase(s.placements, s.slice_counts(), s.player_slots, bars)
+                        });
+                        context.automate(P::LiveVariations, 0.0);
+                        self.message =
+                            "Phrase frozen. Choose Edit to change it; slice locks are unchanged."
+                                .into();
+                    }
+                }
+                _ => {}
             }
         });
         ui.horizontal(|ui| {
-            if ui
-                .add(
-                    egui::Button::new(egui::RichText::new("Export MIDI").color(WELL).strong())
-                        .fill(ACCENT),
-                )
-                .on_hover_text(format!(
-                    "Save four bars to {}. Live variations are frozen before export.",
-                    export_dir_label()
-                ))
-                .clicked()
-            {
-                self.export_midi(context);
-            }
-            ui.separator();
-            ui.label("Playback");
+            field_label(ui, "Playback", 62.0);
             let midi = context.params().playback.value() != 0;
-            if ui.selectable_label(!midi, "Internal").clicked() {
-                context.automate(P::Playback, 0.0);
-            }
-            if ui.selectable_label(midi, "MIDI region").clicked() {
-                context.automate(P::Playback, 1.0);
+            if let Some(choice) = segmented(
+                ui,
+                u8::from(midi),
+                &[(0, "Internal", true, ""), (1, "MIDI region", true, "")],
+                Some(&[
+                    "Junglizer plays the phrase itself.",
+                    "Play an exported MIDI region on this track instead.",
+                ]),
+            ) && choice != u8::from(midi)
+            {
+                context.automate(P::Playback, f64::from(choice));
             }
         });
+        let text = egui::RichText::new("Export MIDI")
+            .strong()
+            .color(if frozen { WELL } else { ACCENT });
+        let button = egui::Button::new(text)
+            .fill(if frozen { ACCENT } else { SURFACE })
+            .stroke(Stroke::new(1.5_f32, ACCENT));
+        if ui
+            .add_sized([ui.available_width(), 28.0], button)
+            .on_hover_text(format!(
+                "Save four bars to {}. Live variations are frozen before export.",
+                export_dir_label()
+            ))
+            .clicked()
+        {
+            self.export_midi(context);
+        }
     }
+}
+
+/// A fixed-width field label, so rows of controls line up.
+fn field_label(ui: &mut Ui, text: &str, width: f32) {
+    ui.allocate_ui_with_layout(
+        vec2(width, ui.spacing().interact_size.y),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_width(width);
+            ui.label(text);
+        },
+    );
+}
+
+/// A draggable value with − and + buttons beside it. True if it changed.
+fn stepper(
+    ui: &mut Ui,
+    value: &mut u8,
+    range: std::ops::RangeInclusive<u8>,
+    suffix: &str,
+    hover: &str,
+) -> bool {
+    let (low, high) = (*range.start(), *range.end());
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = 3.0;
+        let mut changed = false;
+        if ui
+            .add_enabled(
+                *value > low,
+                egui::Button::new("−").min_size(vec2(24.0, 0.0)),
+            )
+            .on_hover_text(hover)
+            .clicked()
+        {
+            *value -= 1;
+            changed = true;
+        }
+        changed |= ui
+            .add(egui::DragValue::new(value).range(low..=high).suffix(suffix))
+            .on_hover_text(format!("{hover} · drag or type a value"))
+            .changed();
+        if ui
+            .add_enabled(
+                *value < high,
+                egui::Button::new("+").min_size(vec2(24.0, 0.0)),
+            )
+            .on_hover_text(hover)
+            .clicked()
+        {
+            *value += 1;
+            changed = true;
+        }
+        changed
+    })
+    .inner
+}
+
+/// Framed choices joined into one control: the selected one on SELECTION,
+/// the rest on SURFACE. Each option is (value, label, enabled, why it's
+/// disabled). With `hovers`, each option explains itself. Returns the
+/// clicked value, if any.
+fn segmented<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    current: T,
+    options: &[(T, &str, bool, &str)],
+    hovers: Option<&[&str]>,
+) -> Option<T> {
+    let mut clicked = None;
+    ui.scope(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let last = options.len() - 1;
+        for (i, &(value, label, enabled, disabled_hover)) in options.iter().enumerate() {
+            let selected = value == current;
+            let radius = egui::CornerRadius {
+                nw: if i == 0 { 3 } else { 0 },
+                sw: if i == 0 { 3 } else { 0 },
+                ne: if i == last { 3 } else { 0 },
+                se: if i == last { 3 } else { 0 },
+            };
+            let mut button = egui::Button::new(label)
+                .selected(selected)
+                .corner_radius(radius);
+            if selected {
+                button = button.stroke(Stroke::new(1.0_f32, ACCENT));
+            }
+            let mut response = ui.add_enabled(enabled, button);
+            if let Some(text) = hovers.and_then(|h| h.get(i)) {
+                response = response.on_hover_text(*text);
+            }
+            if !disabled_hover.is_empty() {
+                response = response.on_disabled_hover_text(disabled_hover);
+            }
+            if response.clicked() {
+                clicked = Some(value);
+            }
+        }
+    });
+    clicked
+}
+
+/// The player's padlock: an 8 × 7 body at `at` with its shackle above.
+fn padlock(painter: &egui::Painter, at: Pos2, color: Color32) {
+    painter.rect_filled(Rect::from_min_size(at, vec2(8.0, 7.0)), 1.0, color);
+    painter.rect_stroke(
+        Rect::from_min_size(at + vec2(1.0, -5.0), vec2(6.0, 7.0)),
+        2.0,
+        Stroke::new(1.5_f32, color),
+        StrokeKind::Inside,
+    );
 }
 
 // Patterns reinforce break identity when colors are hard to distinguish.
