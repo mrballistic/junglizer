@@ -6,6 +6,7 @@ mod library;
 mod live;
 mod midi;
 pub mod pattern;
+mod platform;
 mod sample;
 mod suggest;
 pub mod tempo;
@@ -291,6 +292,7 @@ struct Audition {
     end: u32,
 }
 
+#[cfg(test)]
 const SOURCE_FILES: [&str; 4] = [
     "174_JunglizerAmen_Bar_01.wav",
     "174_JunglizerAmen_Bar_02.wav",

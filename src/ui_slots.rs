@@ -1,12 +1,13 @@
 //! The break slot controls: load, unload, relink and half/double.
 
-use super::{EDGE, JunglizerUi, MUTED, SOURCE_COLORS, apply_style};
+use super::{ACCENT, EDGE, INK, JunglizerUi, MUTED, SOURCE_COLORS, WELL, apply_style};
 use crate::edit_state::{EditState, MAX_PATH_BYTES, SlotError, SlotKind};
 use crate::library::{Library, LoadOutcome, LoadedBreak, Purpose};
 use crate::sample::StereoSample;
 use crate::tempo::{self, Reading};
 use crate::{JunglizerParams, JunglizerParamsParamId as P};
-use egui::Ui;
+use egui::{Pos2, Rect, Sense, Stroke, Ui, vec2};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use truce::prelude::PluginContext;
@@ -14,6 +15,9 @@ use truce::prelude::PluginContext;
 /// Shown on every break control that's disabled while frozen or live.
 pub(crate) const LOCKED_HINT: &str = "Unfreeze or stop live variations to change breaks.";
 const UNREADABLE: &str = "Junglizer couldn’t read that file. Use a WAV, AIFF or MP3.";
+const TARGET_PROMPT: &str = "Choose your own break (4 to 32 beats, 80–195 BPM)";
+const FREE_PACKS: &str = "Need breaks? Free packs from KAN Samples";
+const FREE_PACKS_URL: &str = "https://kansamples.com/blogs/free-drum-and-bass-sample-packs";
 /// How many suggested markers a fresh load starts with.
 const LOAD_SLICES: usize = 8;
 
@@ -22,7 +26,6 @@ pub(crate) enum LoadMode {
     Load,
     Relink,
     /// Loads into the slot and clears every other slot (the first-launch prompt).
-    #[allow(dead_code)] // chosen by the first-launch prompt (Task 9)
     FirstRun,
 }
 
@@ -101,6 +104,30 @@ pub(crate) fn file_name(path: &str) -> &str {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(path)
+}
+
+/// Whether to show the first-launch prompt: only when this machine hasn't
+/// answered it, and only on an instance nobody has edited, so **Choose…**
+/// can never clear someone's work.
+pub(crate) fn show_first_run(flag_exists: bool, state: &EditState) -> bool {
+    !flag_exists && state.is_pristine()
+}
+
+/// Remembers, for this machine, that the first-launch prompt was answered.
+/// Without a config folder there's nothing to write, and the prompt never
+/// shows there anyway.
+pub(crate) fn mark_first_run_done() {
+    if let Some(flag) = crate::platform::first_run_flag() {
+        let _ = write_flag(&flag);
+    }
+}
+
+/// Creates `flag`'s folder, then `flag` as an empty file.
+fn write_flag(flag: &Path) -> std::io::Result<()> {
+    if let Some(folder) = flag.parent() {
+        std::fs::create_dir_all(folder)?;
+    }
+    std::fs::File::create(flag).map(drop)
 }
 
 /// Commits a finished load into `state`, or explains why it can't. Every
@@ -314,6 +341,11 @@ impl JunglizerUi {
                 self.state.update(|state| *state = next);
                 self.refresh_slot_audio();
                 self.select_after_load = Some(slot);
+                // Only a load that took dismisses the prompt for good.
+                if mode == LoadMode::FirstRun {
+                    mark_first_run_done();
+                    self.first_run = false;
+                }
                 self.message = format!(
                     "Loaded {}: {}. Use ½ or ×2 if the tempo is off.",
                     file_name(path),
@@ -464,7 +496,13 @@ impl JunglizerUi {
     }
 
     /// Faint beat lines and stronger bar lines every 4 beats.
+    /// Nothing is drawn in a blank well or one with no audio.
     pub(crate) fn beat_grid(&self, painter: &egui::Painter, rect: egui::Rect, slot: usize) {
+        if self.state.get().slots[slot].kind == SlotKind::Blank
+            || self.slot_audio[slot].sample().is_none()
+        {
+            return;
+        }
         let beats = self.slot_beats(slot);
         for beat in 1..beats {
             let x = rect.left() + rect.width() * f32::from(beat) / f32::from(beats);
@@ -480,6 +518,140 @@ impl JunglizerUi {
                 ],
                 egui::Stroke::new(1.0_f32, color),
             );
+        }
+    }
+
+    /// True when no slot has a break that can sound: every slot is blank,
+    /// or holds a user break that's missing or unreadable.
+    pub(crate) fn no_playable_break(&self) -> bool {
+        (0..self.slot_audio.len()).all(|slot| {
+            matches!(
+                self.slot_status(slot),
+                SlotStatus::Blank | SlotStatus::Missing | SlotStatus::Unreadable
+            )
+        })
+    }
+
+    /// Whether the source waveform is replaced by the break target.
+    pub(crate) fn shows_break_target(&self) -> bool {
+        self.first_run || self.no_playable_break()
+    }
+
+    /// Puts the four built-in breaks back, with fresh markers.
+    pub(crate) fn use_builtin_amen(&mut self) {
+        if !self.breaks_editable() {
+            self.message = LOCKED_HINT.into();
+            return;
+        }
+        self.state.update(EditState::restore_builtin);
+        self.refresh_slot_audio();
+        for slot in 0..self.slot_audio.len() {
+            let count = self.state.get().slice_count(slot);
+            self.ensure_markers(slot, count);
+        }
+        self.select_after_load = Some(self.selected_loop);
+        self.message = "The Junglizer amen is back in all four slots.".into();
+    }
+
+    /// The dashed target drawn in place of the source waveform: the
+    /// first-launch prompt, or the empty state when no slot can sound.
+    pub(crate) fn break_target(&mut self, ui: &mut Ui, rect: Rect) {
+        let outline = rect.shrink(1.5);
+        let corners = [
+            outline.left_top(),
+            outline.right_top(),
+            outline.right_bottom(),
+            outline.left_bottom(),
+            outline.left_top(),
+        ];
+        ui.painter().extend(egui::Shape::dashed_line(
+            &corners,
+            Stroke::new(1.5_f32, ACCENT),
+            7.0,
+            5.0,
+        ));
+        let center = rect.center().x;
+        ui.painter().text(
+            Pos2::new(center, rect.top() + 24.0),
+            egui::Align2::CENTER_CENTER,
+            TARGET_PROMPT,
+            egui::FontId::proportional(15.0),
+            INK,
+        );
+        let editable = self.breaks_editable();
+        let row = rect.top() + 56.0;
+        let choose =
+            egui::Button::new(egui::RichText::new("Choose…").color(WELL).strong()).fill(ACCENT);
+        let choose_width = text_width(ui, "Choose…", 13.0) + 20.0;
+        if self.first_run {
+            let keep_width = text_width(ui, "Keep the amen", 13.0) + 16.0;
+            let left = center - (choose_width + 8.0 + keep_width) / 2.0;
+            let choose_rect =
+                Rect::from_min_size(Pos2::new(left, row - 13.0), vec2(choose_width, 26.0));
+            let keep_rect = Rect::from_min_size(
+                Pos2::new(choose_rect.right() + 8.0, row - 13.0),
+                vec2(keep_width, 26.0),
+            );
+            if ui
+                .place(choose_rect, choose)
+                .on_hover_text("Loads into Break 1 and clears Breaks 2 to 4.")
+                .clicked()
+            {
+                self.choose_file(0, LoadMode::FirstRun);
+            }
+            if ui
+                .place(keep_rect, egui::Button::new("Keep the amen"))
+                .clicked()
+            {
+                mark_first_run_done();
+                self.first_run = false;
+            }
+        } else {
+            let restore = "Use the Junglizer amen";
+            let restore_width = text_width(ui, restore, 13.0);
+            let left = center - (choose_width + 16.0 + restore_width) / 2.0;
+            let choose_rect =
+                Rect::from_min_size(Pos2::new(left, row - 13.0), vec2(choose_width, 26.0));
+            if ui
+                .add_enabled_ui(editable, |ui| ui.place(choose_rect, choose))
+                .inner
+                .on_disabled_hover_text(LOCKED_HINT)
+                .clicked()
+            {
+                // A blank slot takes the file; with none, relink the
+                // selected slot so its slices and placements survive.
+                let blank = |s: usize| self.state.get().slots[s].kind == SlotKind::Blank;
+                let target = if blank(self.selected_loop) {
+                    Some(self.selected_loop)
+                } else {
+                    (0..self.slot_audio.len()).find(|&s| blank(s))
+                };
+                match target {
+                    Some(slot) => self.choose_file(slot, LoadMode::Load),
+                    None => self.choose_file(self.selected_loop, LoadMode::Relink),
+                }
+            }
+            let at = Pos2::new(choose_rect.right() + 16.0 + restore_width / 2.0, row);
+            let response = link(ui, at, restore, editable);
+            let response = if editable {
+                response.on_hover_text("Puts the four built-in breaks back.")
+            } else {
+                response.on_hover_text(LOCKED_HINT)
+            };
+            if response.clicked() {
+                self.use_builtin_amen();
+            }
+        }
+        if link(
+            ui,
+            Pos2::new(center, rect.bottom() - 18.0),
+            FREE_PACKS,
+            true,
+        )
+        .on_hover_text(FREE_PACKS_URL)
+        .clicked()
+        {
+            crate::platform::open_url(FREE_PACKS_URL);
         }
     }
 
@@ -533,6 +705,39 @@ impl JunglizerUi {
             None => {}
         }
     }
+}
+
+fn text_width(ui: &Ui, text: &str, size: f32) -> f32 {
+    ui.painter()
+        .layout_no_wrap(text.to_owned(), egui::FontId::proportional(size), INK)
+        .size()
+        .x
+}
+
+/// Link-styled text centered on `at`: ACCENT, underlined on hover. egui's
+/// own hyperlink can't be used, because the host ignores its `open_url`.
+fn link(ui: &mut Ui, at: Pos2, text: &str, enabled: bool) -> egui::Response {
+    let color = if enabled { ACCENT } else { MUTED };
+    let galley =
+        ui.painter()
+            .layout_no_wrap(text.to_owned(), egui::FontId::proportional(13.0), color);
+    let rect = Rect::from_center_size(at, galley.size());
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let response = ui.interact(rect, ui.id().with(("link", text)), sense);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Link, enabled, text));
+    if enabled && response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        ui.painter().line_segment(
+            [rect.left_bottom(), rect.right_bottom()],
+            Stroke::new(1.0_f32, color),
+        );
+    }
+    ui.painter().galley(rect.min, galley, color);
+    response
 }
 
 #[cfg(test)]
@@ -671,6 +876,26 @@ mod tests {
         assert_eq!((s.slots[0].beats, s.slots[0].frames), (8, 121_656));
         assert!(s.placements.iter().any(|p| p.active && p.source_slice == 1));
         assert!(s.slice(0, 1).unwrap().start >= slice.start);
+    }
+
+    #[test]
+    fn first_run_shows_only_on_a_fresh_instance_without_the_flag() {
+        let mut s = EditState::default();
+        assert!(show_first_run(false, &s));
+        assert!(!show_first_run(true, &s));
+        s.set_slice_count(0, 16);
+        assert!(!show_first_run(false, &s));
+    }
+
+    #[test]
+    fn the_first_run_flag_is_an_empty_file_in_a_new_folder() {
+        let dir = std::env::temp_dir().join(format!("junglizer-flag-{}", std::process::id()));
+        let flag = dir.join("Junglizer").join("first-run-0.9.1");
+        write_flag(&flag).unwrap();
+        assert_eq!(std::fs::metadata(&flag).unwrap().len(), 0);
+        // Writing it again is harmless.
+        write_flag(&flag).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

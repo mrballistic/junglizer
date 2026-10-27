@@ -3,7 +3,7 @@ use crate::library::Library;
 use crate::live::CapturedPhrase;
 use crate::midi::export_to_music;
 use crate::suggest::suggest_bar;
-use crate::{JunglizerParams, JunglizerParamsParamId as P, SOURCE_FILES};
+use crate::{JunglizerParams, JunglizerParamsParamId as P};
 use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, vec2};
 use std::borrow::Cow;
 use std::path::PathBuf;
@@ -20,6 +20,8 @@ const EDGE: Color32 = Color32::from_rgb(76, 81, 61);
 const INK: Color32 = Color32::from_rgb(244, 241, 222);
 const MUTED: Color32 = Color32::from_rgb(171, 178, 154);
 const ACCENT: Color32 = Color32::from_rgb(211, 224, 128);
+const CREDIT: &str =
+    "Built-in breaks played on the Salamander Drumkit by Alexander Holm (CC BY-SA 3.0)";
 const INITIAL_MESSAGE: &str =
     "Choose a source slice, then click a player slot. You can drag it there too.";
 const SOURCE_COLORS: [Color32; 4] = [
@@ -40,6 +42,8 @@ pub struct JunglizerUi {
     select_after_load: Option<usize>,
     confirm_unload: Option<usize>,
     unload_modal_fresh: bool,
+    /// The first-launch prompt is showing.
+    first_run: bool,
     selected_loop: usize,
     selected_slice: usize,
     selected_slot: Option<u8>,
@@ -61,6 +65,7 @@ impl JunglizerUi {
             select_after_load: None,
             confirm_unload: None,
             unload_modal_fresh: false,
+            first_run: false,
             selected_loop: 0,
             selected_slice: 0,
             selected_slot: None,
@@ -151,6 +156,10 @@ impl JunglizerUi {
         let width = ui.available_width();
         let (rect, response) = ui.allocate_exact_size(vec2(width, 112.0), Sense::click_and_drag());
         ui.painter().rect_filled(rect, 5.0, WELL);
+        if self.shows_break_target() {
+            self.break_target(ui, rect);
+            return;
+        }
         let middle = rect.center().y;
         for (bin, amplitude) in self.slot_audio[self.selected_loop].peaks.iter().enumerate() {
             if *amplitude <= 0.0 {
@@ -298,9 +307,8 @@ impl JunglizerUi {
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
                 format!(
-                    "Break {} is unavailable — reinstall the plugin with {} embedded",
-                    self.selected_loop + 1,
-                    SOURCE_FILES[self.selected_loop]
+                    "Break {} is unavailable. Reinstall Junglizer to restore it.",
+                    self.selected_loop + 1
                 ),
                 egui::FontId::proportional(13.0),
                 INK,
@@ -386,36 +394,36 @@ impl JunglizerUi {
                 if active { ACCENT } else { INK },
                 format!("Bar {}", bar + 1),
             );
-            child
-                .add_enabled_ui(
-                    !self.state.get().frozen && !self.state.get().live_enabled,
-                    |ui| {
-                        egui::ComboBox::from_id_salt(("bar-source", bar))
-                            .width(90.0)
-                            .selected_text(
-                                egui::RichText::new(format!("Break {}", bar_sources[bar]))
-                                    .color(SOURCE_COLORS[(bar_sources[bar] - 1) as usize]),
-                            )
-                            .show_ui(ui, |ui| {
-                                for i in 1..=4 {
-                                    if ui
-                                        .selectable_label(
-                                            bar_sources[bar] == i,
-                                            format!("Break {i}"),
-                                        )
-                                        .clicked()
-                                    {
-                                        context.automate(
-                                            [P::Bar1, P::Bar2, P::Bar3, P::Bar4][bar],
-                                            (i - 1) as f64 / 3.0,
-                                        );
-                                    }
+            let locked = self.state.get().frozen || self.state.get().live_enabled;
+            let combo = child
+                .add_enabled_ui(!locked, |ui| {
+                    egui::ComboBox::from_id_salt(("bar-source", bar))
+                        .width(90.0)
+                        .selected_text(
+                            egui::RichText::new(format!("Break {}", bar_sources[bar]))
+                                .color(SOURCE_COLORS[(bar_sources[bar] - 1) as usize]),
+                        )
+                        .show_ui(ui, |ui| {
+                            for i in 1..=4 {
+                                if ui
+                                    .selectable_label(bar_sources[bar] == i, format!("Break {i}"))
+                                    .clicked()
+                                {
+                                    context.automate(
+                                        [P::Bar1, P::Bar2, P::Bar3, P::Bar4][bar],
+                                        (i - 1) as f64 / 3.0,
+                                    );
                                 }
-                            });
-                    },
-                )
-                .response
-                .on_disabled_hover_text("Unfreeze or stop live variations to change ghost breaks.");
+                            }
+                        });
+                })
+                .response;
+            // The dimmed player behind the break target has its own reason.
+            if locked {
+                combo.on_disabled_hover_text(
+                    "Unfreeze or stop live variations to change ghost breaks.",
+                );
+            }
             if active {
                 child.colored_label(ACCENT, "Now");
             }
@@ -653,7 +661,10 @@ impl JunglizerUi {
                     self.place(slot, context);
                 }
             }
-            if self.dragging_slice.is_some() && ui.input(|input| input.pointer.any_released()) {
+            if ui.is_enabled()
+                && self.dragging_slice.is_some()
+                && ui.input(|input| input.pointer.any_released())
+            {
                 self.place(slot, context);
             }
         }
@@ -861,6 +872,9 @@ impl EditorUi<JunglizerParams> for JunglizerUi {
     fn opened(&mut self, context: &PluginContext<JunglizerParams>) {
         self.state = StateBinding::new(context);
         self.params = Some(context.params().clone());
+        // Without a config folder, act as if the prompt was answered.
+        let flag_exists = crate::platform::first_run_flag().is_none_or(|flag| flag.exists());
+        self.first_run = ui_slots::show_first_run(flag_exists, self.state.get());
         self.refresh_slot_audio();
         for index in 0..4 {
             if self
@@ -895,6 +909,11 @@ impl EditorUi<JunglizerParams> for JunglizerUi {
             (context.params().edit_slot.value() as u8 - 1).min(self.state.get().player_slots - 1),
         );
         self.selected_bar = (context.params().fill_bar.value() as usize - 1).min(3);
+        // State restored or edited after opening: the prompt waits for the
+        // next fresh instance, so Choose… never clears someone's work.
+        if self.first_run && !self.state.get().is_pristine() {
+            self.first_run = false;
+        }
         let live = if self.state.get().live_enabled {
             context.params().live_snapshot.capture()
         } else {
@@ -910,7 +929,15 @@ impl EditorUi<JunglizerParams> for JunglizerUi {
                 ui.add_space(3.0);
                 ui.separator();
                 self.player_header(ui, context, live.as_ref());
-                self.player(ui, context, live.as_ref());
+                let dimmed = self.shows_break_target();
+                ui.scope(|ui| {
+                    if dimmed {
+                        // Drawn faded and deaf to clicks until there's a break.
+                        ui.disable();
+                        ui.multiply_opacity(0.7);
+                    }
+                    self.player(ui, context, live.as_ref());
+                });
                 ui.add_space(3.0);
                 ui.columns(2, |columns| {
                     egui::Frame::new().fill(SURFACE).corner_radius(4.0).inner_margin(10.0).show(&mut columns[0], |ui| {
@@ -940,6 +967,9 @@ impl EditorUi<JunglizerParams> for JunglizerUi {
                         else { &self.message };
                     let response = ui.colored_label(ACCENT, message);
                     if let Some(path) = &self.export_path { response.on_hover_text(path.display().to_string()); }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(egui::RichText::new(CREDIT).small().color(MUTED));
+                    });
                 });
 
             });
