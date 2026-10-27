@@ -24,6 +24,8 @@ const TARGET_PROMPT: &str = if DROP_SUPPORTED {
 const NOT_AUDIO: &str = "Junglizer can load WAV, AIFF or MP3 files.";
 const FREE_PACKS: &str = "Need breaks? Free packs from KAN Samples";
 const FREE_PACKS_URL: &str = "https://kansamples.com/blogs/free-drum-and-bass-sample-packs";
+/// Asked before the empty state's amen link replaces missing breaks.
+const AMEN_QUESTION: &str = "Replace all four breaks with the Junglizer amen? Slices and placements on missing breaks will be removed.";
 /// The file types Junglizer decodes, for the dialog filter and drops.
 const AUDIO_EXTENSIONS: &[&str] = &["wav", "aif", "aiff", "mp3"];
 /// How many suggested markers a fresh load starts with.
@@ -38,7 +40,9 @@ pub(crate) enum LoadMode {
 }
 
 /// A file the user chose that the loader hasn't finished yet. `seq` is 0
-/// until the library accepts the request.
+/// until the library accepts the request. `expect` is what the target slot
+/// held when the load was asked for (for a dropped replace, when the user
+/// confirmed it).
 pub(crate) enum PendingLoad {
     None,
     Choosing {
@@ -46,7 +50,42 @@ pub(crate) enum PendingLoad {
         seq: u64,
         path: String,
         mode: LoadMode,
+        expect: SlotSnapshot,
     },
+}
+
+/// What one slot held, to tell whether it changed while a file decoded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SlotSnapshot {
+    kind: SlotKind,
+    path_hash: u64,
+    /// Whether any active placement plays from the slot.
+    placed: bool,
+}
+
+impl SlotSnapshot {
+    pub(crate) fn of(state: &EditState, slot: usize) -> Self {
+        let entry = state.slots[slot];
+        Self {
+            kind: entry.kind,
+            path_hash: entry.path_hash(),
+            placed: state
+                .placements
+                .iter()
+                .any(|p| p.active && usize::from(p.source_loop) == slot),
+        }
+    }
+
+    /// Whether a load asked for when the slot held `self` would now replace
+    /// something the user never agreed to lose: the slot holds a different
+    /// break, or (except for a relink, which keeps them) gained placements.
+    /// A slot that is now blank has nothing to lose.
+    fn changed_for(self, now: Self, mode: LoadMode) -> bool {
+        now.kind != SlotKind::Blank
+            && (now.kind != self.kind
+                || now.path_hash != self.path_hash
+                || (mode != LoadMode::Relink && now.placed && !self.placed))
+    }
 }
 
 /// Where a file drop can land. Each frame's layout registers the rects.
@@ -325,6 +364,7 @@ impl JunglizerUi {
             seq: 0,
             path,
             mode,
+            expect: SlotSnapshot::of(self.state.get(), slot),
         };
         self.post_pending();
     }
@@ -401,8 +441,8 @@ impl JunglizerUi {
         hovered: &[egui::HoveredFile],
         dropped: &[egui::DroppedFile],
     ) {
-        // The unload dialog is modal: nothing under it takes a drop.
-        if (hovered.is_empty() && dropped.is_empty()) || self.confirm_unload.is_some() {
+        // The confirm dialog is modal: nothing under it takes a drop.
+        if (hovered.is_empty() && dropped.is_empty()) || self.confirm_open() {
             return;
         }
         let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) else {
@@ -461,11 +501,15 @@ impl JunglizerUi {
         };
         library.collect_garbage();
         self.post_pending();
-        let (slot, seq, mode) = match &self.pending {
+        let (slot, seq, mode, expect) = match &self.pending {
             PendingLoad::None => return,
             PendingLoad::Choosing {
-                slot, seq, mode, ..
-            } => (*slot, *seq, *mode),
+                slot,
+                seq,
+                mode,
+                expect,
+                ..
+            } => (*slot, *seq, *mode, *expect),
         };
         let result = (seq != 0)
             .then(|| self.library().and_then(|l| l.result(slot, Purpose::Choose)))
@@ -477,7 +521,7 @@ impl JunglizerUi {
                 else {
                     return;
                 };
-                self.commit_load(slot, &path, mode, &result.outcome);
+                self.commit_load(slot, &path, mode, expect, &result.outcome);
             }
             // A newer request replaced this one.
             Some(result) if result.seq > seq => self.pending = PendingLoad::None,
@@ -485,9 +529,27 @@ impl JunglizerUi {
         }
     }
 
-    fn commit_load(&mut self, slot: usize, path: &str, mode: LoadMode, outcome: &LoadOutcome) {
+    fn commit_load(
+        &mut self,
+        slot: usize,
+        path: &str,
+        mode: LoadMode,
+        expect: SlotSnapshot,
+        outcome: &LoadOutcome,
+    ) {
         if !self.breaks_editable() {
             self.message = LOCKED_HINT.into();
+            return;
+        }
+        // The slot changed while the file decoded (a host project load, or
+        // slices placed from it), so the user never agreed to replace what
+        // it holds now.
+        if expect.changed_for(SlotSnapshot::of(self.state.get(), slot), mode) {
+            self.message = format!(
+                "Break {} changed while loading. Drop or choose the file again to replace it.",
+                slot + 1
+            )
+            .into();
             return;
         }
         // A first-run load clears the other slots only if the prompt is
@@ -506,6 +568,13 @@ impl JunglizerUi {
             Ok(reading) => {
                 self.state.update(|state| *state = next);
                 self.refresh_slot_audio();
+                // Draw the audio just committed, even when the path (and so
+                // the cache key) is unchanged: a re-bounced file reloaded.
+                if let LoadOutcome::Loaded(audio) = outcome {
+                    let entry = self.state.get().slots[slot];
+                    self.slot_audio[slot] =
+                        SlotAudio::new((entry.kind, entry.path_hash()), Some(audio.clone()));
+                }
                 self.select_after_load = Some(slot);
                 // Only a load that took dismisses the prompt for good.
                 if mode == LoadMode::FirstRun {
@@ -710,8 +779,35 @@ impl JunglizerUi {
         self.first_run || self.no_playable_break()
     }
 
-    /// Puts the four built-in breaks back, with fresh markers.
+    /// Whether the unload, replace or amen confirm dialog is up.
+    pub(crate) fn confirm_open(&self) -> bool {
+        self.confirm_unload.is_some() || self.confirm_amen
+    }
+
+    /// The empty state's Use the Junglizer amen. A missing or unreadable
+    /// break's slices and placements go with it, so ask first when there
+    /// is one.
     pub(crate) fn use_builtin_amen(&mut self) {
+        if !self.breaks_editable() {
+            self.message = LOCKED_HINT.into();
+            return;
+        }
+        if self
+            .state
+            .get()
+            .slots
+            .iter()
+            .any(|slot| slot.kind == SlotKind::User)
+        {
+            self.confirm_amen = true;
+            self.unload_modal_fresh = true;
+            return;
+        }
+        self.restore_amen();
+    }
+
+    /// Puts the four built-in breaks back, with fresh markers.
+    fn restore_amen(&mut self) {
         if !self.breaks_editable() {
             self.message = LOCKED_HINT.into();
             return;
@@ -811,11 +907,13 @@ impl JunglizerUi {
         }
     }
 
-    /// Asks before unloading a break, or before a dropped file replaces one.
+    /// Asks before unloading a break, before a dropped file replaces one,
+    /// or before the amen replaces missing breaks.
     pub(crate) fn unload_modal(&mut self, ctx: &egui::Context) {
-        let Some(slot) = self.confirm_unload else {
+        if !self.confirm_open() {
             return;
-        };
+        }
+        let slot = self.confirm_unload.unwrap_or(0);
         if std::mem::take(&mut self.unload_modal_fresh) {
             // A new area is invisible while it measures itself; redo the
             // pass so the dialog shows on the first frame.
@@ -825,6 +923,7 @@ impl JunglizerUi {
         // No fade: the dialog is there on the frame it opens.
         let modal = egui::Modal::new(id).area(egui::Modal::default_area(id).fade_in(false));
         let (question, confirm) = match &self.replace_with {
+            _ if self.confirm_amen => (AMEN_QUESTION.to_owned(), "Replace"),
             Some(path) => (
                 format!(
                     "Replace Break {} with “{}”? Its slices and placements in this project will be removed.",
@@ -864,9 +963,15 @@ impl JunglizerUi {
         }
     }
 
-    /// Acts on the unload dialog's answer: unload the break, or load the
-    /// dropped file over it. Cancel leaves the slot as it was.
+    /// Acts on the dialog's answer: unload the break, load the dropped file
+    /// over it, or put the amen back. Cancel leaves everything as it was.
     pub(crate) fn close_unload_modal(&mut self, confirmed: bool) {
+        if std::mem::take(&mut self.confirm_amen) {
+            if confirmed {
+                self.restore_amen();
+            }
+            return;
+        }
         let Some(slot) = self.confirm_unload.take() else {
             return;
         };
@@ -1107,6 +1212,7 @@ mod tests {
             seq: 1,
             path: "/x/mine 174.wav".to_owned(),
             mode: LoadMode::FirstRun,
+            expect: SlotSnapshot::of(editor.state.get(), 0),
         };
         editor
     }
@@ -1114,12 +1220,16 @@ mod tests {
     /// What `poll_pending_load` does once the loader reports back.
     fn finish_pending(editor: &mut JunglizerUi, outcome: &LoadOutcome) {
         let PendingLoad::Choosing {
-            slot, path, mode, ..
+            slot,
+            path,
+            mode,
+            expect,
+            ..
         } = std::mem::replace(&mut editor.pending, PendingLoad::None)
         else {
             panic!("no pending load");
         };
-        editor.commit_load(slot, &path, mode, outcome);
+        editor.commit_load(slot, &path, mode, expect, outcome);
     }
 
     #[test]
@@ -1251,12 +1361,12 @@ mod tests {
             assert_eq!(editor.confirm_unload, Some(2));
             assert_eq!(editor.replace_with, Some(PathBuf::from("/x/new.wav")));
             assert!(pending_load(&editor).is_none());
-            assert_eq!(*editor.state.get(), before);
+            assert!(*editor.state.get() == before, "the state changed");
             editor.close_unload_modal(false);
             assert_eq!(editor.confirm_unload, None);
             assert_eq!(editor.replace_with, None);
             assert!(pending_load(&editor).is_none());
-            assert_eq!(*editor.state.get(), before);
+            assert!(*editor.state.get() == before, "the state changed");
             assert_eq!(editor.state.get().slots[2].kind, SlotKind::Builtin);
         }
     }
@@ -1325,7 +1435,7 @@ mod tests {
             assert_eq!(editor.confirm_unload, Some(0), "{target:?}");
             assert_eq!(editor.replace_with, Some(PathBuf::from("/x/a.wav")));
             assert!(pending_load(&editor).is_none(), "{target:?}");
-            assert_eq!(*editor.state.get(), before);
+            assert!(*editor.state.get() == before, "the state changed");
         }
     }
 
@@ -1416,6 +1526,153 @@ mod tests {
         editor.drop_files(DropTarget::Slot(0), &dropped("/x/a.wav"));
         assert_eq!(editor.message, LOCKED_HINT);
         assert!(pending_load(&editor).is_none());
+    }
+
+    /// An editor whose Break 2 is a user break whose file is missing, with
+    /// a slice placed from it, and the other slots blank: the empty state.
+    fn editor_with_a_missing_break() -> JunglizerUi {
+        let mut editor = JunglizerUi::new();
+        editor.params = Some(Arc::new(crate::JunglizerParams::default()));
+        let suggested = Library::builtin()[1].suggested;
+        let path = "/Volumes/Gone/think.wav";
+        editor.state.update(|s| {
+            for slot in [0, 2, 3] {
+                s.unload(slot);
+            }
+            s.load_user(1, path, 60_828, 4, &suggested[..8]).unwrap();
+            assert!(s.place(crate::edit_state::StepPlacement {
+                active: true,
+                start_slot: 0,
+                span_slots: 1,
+                source_loop: 1,
+                source_slice: 2,
+                mode: 0,
+                bit_depth: 16,
+                repeats: 1,
+                locked: false,
+            }));
+        });
+        let library = &editor.params.as_ref().unwrap().library;
+        library
+            .request(1, path.as_bytes(), Purpose::Restore)
+            .unwrap();
+        library.run_pending();
+        editor.refresh_slot_audio();
+        assert!(editor.no_playable_break());
+        editor
+    }
+
+    #[test]
+    fn the_amen_link_asks_before_it_removes_a_missing_breaks_work() {
+        let mut editor = editor_with_a_missing_break();
+        let before = editor.state.get().clone();
+        editor.use_builtin_amen();
+        assert!(*editor.state.get() == before, "the state changed");
+        assert!(editor.confirm_amen && editor.confirm_open());
+        // The dialog is modal: a drop under it is ignored.
+        editor.handle_file_drop(&egui::Context::default(), &[], &dropped("/x/a.wav"));
+        assert!(pending_load(&editor).is_none());
+        editor.close_unload_modal(false);
+        assert!(!editor.confirm_open());
+        assert!(*editor.state.get() == before, "Cancel changed the state");
+        editor.use_builtin_amen();
+        editor.close_unload_modal(true);
+        assert!(!editor.confirm_open());
+        assert_eq!(
+            editor.state.get().slots.map(|s| s.kind),
+            [SlotKind::Builtin; 4]
+        );
+        assert!(editor.state.get().placements.iter().all(|p| !p.active));
+        assert_eq!(
+            editor.message,
+            "The Junglizer amen is back in all four slots."
+        );
+    }
+
+    #[test]
+    fn with_no_user_break_the_amen_link_restores_without_asking() {
+        let mut editor = JunglizerUi::new();
+        editor.state.update(|s| {
+            for slot in 0..4 {
+                s.unload(slot);
+            }
+        });
+        editor.use_builtin_amen();
+        assert!(!editor.confirm_open());
+        assert_eq!(
+            editor.state.get().slots.map(|s| s.kind),
+            [SlotKind::Builtin; 4]
+        );
+    }
+
+    const CHANGED: &str = "changed while loading. Drop or choose the file again to replace it.";
+
+    #[test]
+    fn a_load_into_a_blank_slot_the_host_filled_meanwhile_is_dropped() {
+        let mut editor = JunglizerUi::new();
+        editor.state.update(|s| {
+            s.unload(2);
+        });
+        editor.refresh_slot_audio();
+        editor.drop_files(DropTarget::Slot(2), &dropped("/x/b.wav"));
+        assert_eq!(pending_load(&editor), Some((2, "/x/b.wav", LoadMode::Load)));
+        // A host project load fills Break 3 while the file decodes.
+        let suggested = Library::builtin()[2].suggested;
+        editor.state.update(|s| {
+            s.load_user(2, "/host/kept.wav", 60_828, 4, &suggested[..8])
+                .unwrap();
+        });
+        let before = editor.state.get().clone();
+        finish_pending(&mut editor, &loaded(60_828, 4));
+        assert!(*editor.state.get() == before, "the state changed");
+        assert_eq!(editor.message, format!("Break 3 {CHANGED}"));
+    }
+
+    #[test]
+    fn a_first_run_load_never_replaces_break_one_once_it_has_placements() {
+        let mut editor = JunglizerUi::new();
+        editor.first_run = true;
+        editor.drop_files(DropTarget::FirstRun, &dropped("/x/mine 174.wav"));
+        assert_eq!(
+            pending_load(&editor),
+            Some((0, "/x/mine 174.wav", LoadMode::FirstRun))
+        );
+        // A slice from Break 1 is placed while the file decodes.
+        editor.ensure_markers(0, 8);
+        editor.state.update(|s| {
+            assert!(s.place(crate::edit_state::StepPlacement {
+                active: true,
+                start_slot: 0,
+                span_slots: 1,
+                source_loop: 0,
+                source_slice: 2,
+                mode: 0,
+                bit_depth: 16,
+                repeats: 1,
+                locked: false,
+            }));
+        });
+        let before = editor.state.get().clone();
+        finish_pending(&mut editor, &loaded(60_828, 4));
+        assert!(*editor.state.get() == before, "the state changed");
+        assert_eq!(editor.message, format!("Break 1 {CHANGED}"));
+    }
+
+    #[test]
+    fn a_confirmed_replace_still_loads_and_a_slot_emptied_meanwhile_takes_it() {
+        let mut editor = editor_with_builtin_placement();
+        editor.drop_files(DropTarget::Slot(2), &dropped("/x/new.wav"));
+        editor.close_unload_modal(true);
+        finish_pending(&mut editor, &loaded(60_828, 4));
+        assert_eq!(editor.state.get().slots[2].path(), Some("/x/new.wav"));
+        // Unloading the target while its file decodes loses nothing.
+        editor.drop_files(DropTarget::Slot(1), &dropped("/x/other.wav"));
+        editor.close_unload_modal(true);
+        editor.state.update(|s| {
+            s.unload(1);
+        });
+        finish_pending(&mut editor, &loaded(60_828, 4));
+        assert_eq!(editor.state.get().slots[1].path(), Some("/x/other.wav"));
     }
 
     #[test]

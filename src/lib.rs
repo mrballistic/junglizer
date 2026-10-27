@@ -352,8 +352,8 @@ impl Junglizer {
     }
 
     /// Makes each slot hold exactly its own audio: the shared built-in for a
-    /// built-in slot, the loaded file whose path matches for a user slot,
-    /// and nothing for a blank one. Runs first in every block, so it must
+    /// built-in slot, the newest loaded file whose path matches for a user
+    /// slot, and nothing for a blank one. Runs first in every block, so it must
     /// not allocate, free or block: new audio comes from the library with
     /// `try_lock`, and old audio goes back to it to be freed elsewhere.
     fn reconcile_sources(&mut self, library: &Library) {
@@ -372,15 +372,23 @@ impl Junglizer {
                 SlotKind::Blank => self.hold(slot, None, library),
                 SlotKind::User => {
                     let hash = self.edit.slots[slot].path_hash();
-                    if self.sources[slot]
+                    let held = self.sources[slot]
                         .as_ref()
-                        .is_some_and(|held| held.path_hash == hash)
-                    {
+                        .filter(|held| held.path_hash == hash)
+                        .map(|held| held.seq);
+                    if let Some(held) = held {
+                        // A newer decode of the same path (a re-bounced file
+                        // loaded again) replaces the one playing.
+                        if let Some(LoadOutcome::Loaded(audio)) =
+                            library.try_adopt(slot, hash, held)
+                        {
+                            self.hold(slot, Some(audio), library);
+                        }
                         continue;
                     }
                     // Never play another file's audio while this one loads.
                     self.hold(slot, None, library);
-                    match library.try_adopt(slot, hash) {
+                    match library.try_adopt(slot, hash, 0) {
                         Some(LoadOutcome::Loaded(audio)) => self.sources[slot] = Some(audio),
                         // Missing, unreadable or refused: stay silent so the
                         // bar falls back, and keep the markers for Relink.
@@ -1662,12 +1670,22 @@ mod audio_tests {
             let held = st.sources[slot].as_ref().expect("adopted");
             assert_eq!(held.path_hash, st.edit.slots[slot].path_hash());
         }
+        // A newer decode of the same path (a re-bounced file chosen again)
+        // swaps in, retiring the old one through the queue.
+        let old_seq = st.sources[0].as_ref().unwrap().seq;
+        lib.request(0, path.as_bytes(), Purpose::Choose).unwrap();
+        lib.run_pending();
+        assert_eq!(run_block(&mut st, &params, 0.15), 0, "same-path swap");
+        assert!(st.sources[0].as_ref().unwrap().seq > old_seq);
+        lib.collect_garbage();
         // Replace the library's results, so the DSP holds the last reference
         // and freeing it on the audio thread would be a real free.
         for slot in 0..2 {
             lib.request(slot, b"/nowhere/other.wav", Purpose::Restore)
                 .unwrap();
         }
+        lib.request(0, b"/nowhere/other.wav", Purpose::Choose)
+            .unwrap();
         lib.run_pending();
         assert!(
             st.sources[..2]
