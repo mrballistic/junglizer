@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Check the beta 2 tempo rule against a folder of loops whose filenames carry a BPM.
 
-Rule (design doc, "Length"): for each whole-bar beat count from MIN_BEATS to 32, BPM =
-beats x 60 / duration; take the largest BPM at or below 195; accept it if it's 80 or above.
+Rule (design doc, "Length"):
+1. Filename hint: if the name carries a BPM in 80-195 and that BPM makes the file a whole number
+   of bars (within TOL), use it. More than 32 beats at that tempo refuses the file.
+2. Otherwise, fastest fit: for each whole-bar beat count from MIN_BEATS to 32, BPM =
+   beats x 60 / duration; take the largest BPM at or below 195; accept it if it's 80 or above.
 
-Read-only analysis. Usage: python3 tools/tempo/check_tempo_rule.py <folder> [<folder> ...]
+Read-only analysis. Usage: python3 tools/tempo/check_tempo_rule.py [--no-hint] <folder> [<folder> ...]
 WAV via the stdlib; AIFF/MP3 durations via macOS afinfo.
 """
 import collections
@@ -27,7 +30,12 @@ def duration(path):
         return float(m.group(1)) if m else None
 
 
-def read(d):
+def read(d, hint=None):
+    if hint and LO <= hint <= HI:
+        exact = hint * d / 60
+        beats = round(exact / 4) * 4
+        if beats and abs(exact - beats) <= beats * TOL:
+            return (beats, beats * 60 / d) if MIN_BEATS <= beats <= MAX_BEATS else None
     best = None
     for beats in range(MIN_BEATS, MAX_BEATS + 1, 4):
         bpm = beats * 60 / d
@@ -42,7 +50,14 @@ def named_bpm(name):
     return v if v and 60 <= v <= 200 else None
 
 
+HINT = True
+
+
 def main():
+    global HINT
+    if "--no-hint" in sys.argv:
+        HINT = False
+        sys.argv.remove("--no-hint")
     stats, rows = collections.Counter(), []
     for root in sys.argv[1:]:
         for dp, _, fs in os.walk(root):
@@ -53,7 +68,8 @@ def main():
                 if not d:
                     stats["unreadable"] += 1
                     continue
-                res, nb = read(d), named_bpm(f)
+                nb = named_bpm(f)
+                res = read(d, nb if HINT else None)
                 if not res:
                     kind = "refused"
                 elif not nb:
