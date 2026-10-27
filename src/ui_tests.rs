@@ -185,7 +185,7 @@ fn fixture(
         params.set_normalized(P::EditBreak.into(), 1.0 / 3.0);
         params.set_normalized(P::EditSlice.into(), 0.0);
     }
-    if name == "blank-slot" || name == "unload-modal" {
+    if name == "blank-slot" || name == "unload-modal" || name == "unload-modal-replace" {
         params.set_normalized(P::EditBreak.into(), 1.0 / 3.0);
         params.set_normalized(P::EditSlice.into(), 0.0);
     }
@@ -197,6 +197,12 @@ fn fixture(
     if name == "unload-modal" {
         editor.confirm_unload = Some(1);
         editor.unload_modal_fresh = true;
+    }
+    if name == "unload-modal-replace" {
+        // A WAV dropped on built-in Break 2.
+        editor.confirm_unload = Some(1);
+        editor.unload_modal_fresh = true;
+        editor.replace_with = Some(PathBuf::from("/Users/me/Breaks/think break 174.wav"));
     }
     if name == "missing" {
         // A user break whose file is gone: the restore reports Missing.
@@ -309,6 +315,7 @@ fn render_editor_states() {
         "blank-slot",
         "missing",
         "unload-modal",
+        "unload-modal-replace",
         "first-run",
         "empty",
     ] {

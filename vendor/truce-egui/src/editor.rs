@@ -1137,6 +1137,7 @@ impl<P: Params + ?Sized + 'static> WindowHandler for EguiWindowHandler<P> {
                             let pos = egui::pos2(position.x as f32, position.y as f32);
                             self.last_cursor_pos = pos;
                             self.pending_events.push(egui::Event::PointerMoved(pos));
+                            self.hovered_files.clear();
                             if let baseview::DropData::Files(paths) = data {
                                 self.dropped_files.extend(paths.into_iter().map(|p| {
                                     egui::DroppedFile {
@@ -1144,9 +1145,10 @@ impl<P: Params + ?Sized + 'static> WindowHandler for EguiWindowHandler<P> {
                                         ..Default::default()
                                     }
                                 }));
+                                EventStatus::AcceptDrop(baseview::DropEffect::Copy)
+                            } else {
+                                EventStatus::Ignored
                             }
-                            self.hovered_files.clear();
-                            EventStatus::AcceptDrop(baseview::DropEffect::Copy)
                         }
                     }
                 }
