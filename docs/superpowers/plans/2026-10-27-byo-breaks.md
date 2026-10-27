@@ -13,7 +13,7 @@
 
 **Departures from the spec, pending Todd's OK:**
 - **No Rubato.** The engine already interpolates at each file's own rate, and ghosts map by beats, so resampling to the host rate adds a dependency for nothing. The Review Focus item 3 tests prove it.
-- **Click to choose rather than drop.** truce-egui 6.3 doesn't pass file drops to egui, so the first-run copy reads “Choose your own break…”. See Task 13.
+- **Drag and drop needs a truce-egui patch (Task 13, approved by Todd).** truce-egui 6.3 doesn't pass file drops to egui. Task 13 patches it for macOS and Windows; Linux keeps click to choose. Until Task 13 lands, Task 9 uses the click-only copy.
 
 **Tech Stack:**
 - Rust 2024 and truce 6.3 (egui 0.34)
@@ -65,6 +65,7 @@
 | `src/library.rs` (new) | `LoadedBreak` (Task 6); requests, results, retire queue, loader thread (Task 7) |
 | `src/lib.rs` | Engine: native-rate multi-bar sources, ghost alignment, fallback, reconcile (Tasks 6–7) |
 | `src/ui.rs`, `src/ui_slots.rs` (new) | Slot controls, file dialog, modal, half/double (Task 8); first run, empty state, credit (Task 9) |
+| `vendor/truce-egui/` | Patched truce-egui with file drops on macOS and Windows (Task 13) |
 | `src/platform.rs` (new) | Export folder, reveal, per-OS labels, first-run flag path (Task 10, flag path used in Task 9) |
 | `.github/workflows/ci-release.yml` | Windows and Linux bundles (Task 11) |
 | `README.md`, `docs/RELEASE-NOTES-0.9.1-beta.2.md`, `Cargo.toml`, `site/` | Docs, version, site copy (Task 12) |
@@ -1112,15 +1113,109 @@ git commit -m "Docs, version 0.9.1-beta.2 and site copy for beta 2" -- Cargo.tom
 
 ---
 
-### Task 13 (only if Todd approves): Drag and drop
+### Task 13: Drag and drop on macOS and Windows
 
-truce-egui 6.3 drops baseview's `DragEntered`/`DragDropped` events in its `_ => Ignored` arm (`truce-egui-6.3.0/src/editor.rs`, `on_event`). baseview implements them on macOS and Windows only, not Linux. Shipping drag and drop therefore means:
-1. Vendor a patched truce-egui with `[patch.crates-io]`. It returns `EventStatus::AcceptDrop(DropEffect::Copy)` for `DragEntered`/`DragMoved` and feeds `DropData::Files` into `egui::RawInput::dropped_files`.
-2. Send the patch upstream.
-3. Read `ctx.input(|i| i.raw.dropped_files.clone())` in the waveform and slot rects.
-4. Change the first-run copy to “Drop your own break here (4 to 32 beats, 80–195 BPM)” on macOS and Windows only.
+Todd wants drag and drop wherever the platform allows it. On Linux it isn't possible: baseview has no drop support there, so Linux keeps click to choose. truce-egui 6.3 throws away baseview's `DragEntered`/`DragMoved`/`DragLeft`/`DragDropped` events in the `_ => EventStatus::Ignored` arm of `on_event` (`truce-egui-6.3.0/src/editor.rs`, around line 1070). On macOS, returning `Ignored` rejects the drag. The fix is a small patch to truce-egui, plus drop targets in our UI.
 
-Write this task in full only after Todd decides.
+**Files:**
+- Create: `vendor/truce-egui/`, a copy of `truce-egui-6.3.0` from the cargo registry with the patch below, and `docs/upstream/truce-egui-file-drop.md`, a draft upstream issue (not filed)
+- Modify: `Cargo.toml` (`[patch.crates-io] truce-egui = { path = "vendor/truce-egui" }`), `src/ui.rs`, `src/ui_slots.rs`, `src/ui_tests.rs`
+
+**Interfaces:**
+- Consumes: `choose_file`'s request path and `LoadMode` (Task 8); the first-run and empty targets (Task 9)
+- Produces:
+```rust
+// ui_slots.rs
+pub(crate) const DROP_SUPPORTED: bool = cfg!(any(target_os = "macos", target_os = "windows"));
+pub(crate) fn accepted_drop(files: &[egui::DroppedFile]) -> Option<PathBuf>; // first file with a wav/aif/aiff/mp3 extension (case-insensitive)
+impl JunglizerUi { pub(crate) fn load_path(&mut self, slot: usize, path: PathBuf, mode: LoadMode); } // shared by the dialog and drops
+```
+
+- [ ] **Step 1: Check the truce license before copying anything**
+
+truce-egui is `LicenseRef-TruceLicense-1.0`, and the crate ships no license file. Find the license text in `https://github.com/truce-audio/truce` and confirm it allows a modified copy inside an app repo that may go public.
+
+If it doesn't, or it's unclear, **stop and ask Todd**. The fallback is a private GitHub fork referenced with `[patch.crates-io] truce-egui = { git = "...", rev = "..." }`.
+
+- [ ] **Step 2: Vendor and patch truce-egui**
+
+Copy `~/.cargo/registry/src/index.crates.io-*/truce-egui-6.3.0/` to `vendor/truce-egui/`, removing its `Cargo.lock` and `Cargo.toml.orig`. In `src/editor.rs`:
+1. **New fields** on the handler struct, next to `pending_events`: `hovered_files: Vec<egui::HoveredFile>` and `dropped_files: Vec<egui::DroppedFile>`. Initialize both empty where `pending_events: Vec::new()` is set.
+2. **Event arms** in `on_event`'s mouse match, before `_ =>`:
+   - `DragEntered { position, modifiers, data }` and `DragMoved { … }`: update `last_cursor_pos` and push `PointerMoved`, as `CursorMoved` does. Then, if `data` is `DropData::Files(paths)`, set `hovered_files` to one `HoveredFile { path: Some(p), ..Default::default() }` per path and return `EventStatus::AcceptDrop(DropEffect::Copy)`. Otherwise clear them and return `Ignored`.
+   - `DragLeft`: clear `hovered_files` and return `Captured`.
+   - `DragDropped { position, data, .. }`: update the cursor as above, move the paths into `dropped_files` as `DroppedFile { path: Some(p), ..Default::default() }`, clear `hovered_files`, and return `AcceptDrop(DropEffect::Copy)`.
+3. **Raw input:** where `egui::RawInput` is built (around line 704), add `hovered_files: self.hovered_files.clone()` and `dropped_files: std::mem::take(&mut self.dropped_files)`.
+4. **Marking:** start every changed block with the comment `// junglizer patch: file drop`.
+
+Run: `cargo build --locked`
+Expected: it builds. `cargo tree -i truce-egui` shows the path dependency.
+
+- [ ] **Step 3: Write the failing test for the drop filter**
+
+```rust
+#[test]
+fn only_supported_audio_files_are_accepted_from_a_drop() {
+    let f = |p: &str| egui::DroppedFile { path: Some(PathBuf::from(p)), ..Default::default() };
+    assert_eq!(accepted_drop(&[f("/a/notes.txt"), f("/a/Think 114.AIF")]), Some(PathBuf::from("/a/Think 114.AIF")));
+    assert_eq!(accepted_drop(&[f("C:\\Breaks\\amen.MP3")]), Some(PathBuf::from("C:\\Breaks\\amen.MP3")));
+    assert_eq!(accepted_drop(&[f("/a/clip.flac"), egui::DroppedFile::default()]), None);
+}
+```
+Run: `cargo test --locked accepted_drop`
+Expected: FAIL. Then implement `accepted_drop`, and expect PASS.
+
+- [ ] **Step 4: Wire up the drop targets**
+
+The UI reads `ui.ctx().input(|i| (i.raw.hovered_files.clone(), i.raw.dropped_files.clone()))` once per frame. A drop lands on whichever target rect contains `pointer.latest_pos()`:
+
+| Target | Load mode |
+|---|---|
+| The first-run target | `FirstRun` into slot 1 |
+| The empty-state target | `Load` into slot 1 |
+| The source waveform | `Load`, or `Relink` when the selected slot is missing, into the selected slot. It shows the unload modal first if the slot holds a User break. |
+| A Break 1–4 button | that slot, same rules |
+
+Other rules:
+- While files hover, outline the target under the pointer with a 2 px `ACCENT` dashed stroke.
+- A drop with no accepted file shows “Junglizer can load WAV, AIFF or MP3 files.”
+- Drops are ignored while frozen or live, with the same message as the disabled buttons.
+- A drop goes through the same `load_path`, so refusals, messages and first-run flag handling are identical to Choose….
+
+- [ ] **Step 5: Copy per platform**
+
+The first-run and empty-target heading:
+- On macOS and Windows (`DROP_SUPPORTED`): “Drop your own break here (4 to 32 beats, 80–195 BPM)”, the spec's copy, with **Choose…** beside it.
+- On Linux: “Choose your own break (4 to 32 beats, 80–195 BPM)”.
+
+Slot hover text on drop platforms: “Click to choose a break, or drop a WAV, AIFF or MP3 here.”
+
+Update the Task 9 fixtures so `first-run.png` renders the drop copy on macOS.
+
+- [ ] **Step 6: Draft the upstream issue (don't file it)**
+
+Write `docs/upstream/truce-egui-file-drop.md`. It covers:
+- the symptom (file drops rejected on macOS and Windows)
+- the cause (the `_ => Ignored` arm)
+- the patch as a diff
+
+It follows the external-writing rule: no em dashes, and not the phrase “load bearing”. Filing it is Todd's call.
+
+- [ ] **Step 7: Gate, render and test in hosts**
+
+Run: `cargo fmt --all -- --check && cargo test --locked && cargo test --locked --features rt-paranoid && cargo test render_editor_states -- --ignored --nocapture`
+Expected: PASS, and `first-run.png` shows the drop copy.
+
+Manual checks:
+- **macOS:** in Logic (AUv2) and Reaper (VST3 and CLAP), drag a WAV from Finder onto the first-run target, onto a Break button and onto the waveform, and confirm each loads into the right slot. A `.txt` file gives the message, and the hover outline appears.
+- **Windows:** repeat in Reaper using the Task 11 dispatch build. If no Windows machine is available, say so in the report rather than claiming it works.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add vendor/truce-egui docs/upstream/truce-egui-file-drop.md
+git commit -m "Drag and drop breaks on macOS and Windows (patched truce-egui)" -- vendor/truce-egui docs/upstream Cargo.toml Cargo.lock src/ui.rs src/ui_slots.rs src/ui_tests.rs
+```
 
 ---
 
