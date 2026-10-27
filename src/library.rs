@@ -353,39 +353,57 @@ impl Host {
     };
 }
 
-/// Whether `path` sits under a root the automounter or a network file
-/// system serves on `host`: `/net/` and `/Network/` on macOS (matched
-/// ignoring ASCII case, as APFS and HFS+ usually are), `/net/`, `/misc/`
-/// and `/run/user/<uid>/gvfs/` on Linux. Merely looking up a name there
-/// can mount a remote share. The root itself (`/net`) is not a mount and
-/// counts too, so `/net` alone is refused.
-fn is_automount(path: &str, host: Host) -> bool {
-    let bytes = path.as_bytes();
-    let under = |root: &[u8], ignore_case: bool| {
-        bytes.len() >= root.len()
-            && (if ignore_case {
-                bytes[..root.len()].eq_ignore_ascii_case(root)
-            } else {
-                &bytes[..root.len()] == root
-            })
-            && bytes.get(root.len()).is_none_or(|&byte| byte == b'/')
-    };
+/// Whether an absolute path, given as its components after the root (none
+/// empty), sits under a root the automounter or a network file system
+/// serves on `host`. Merely looking up a name there can mount a remote
+/// share. A root itself (`/net`) counts too.
+///
+/// - macOS: `/net`, `/Network` and `/home` (the `auto_home` map, a network
+///   home on managed Macs), ignoring ASCII case as APFS and HFS+ usually
+///   do, and also reached through the `/System/Volumes/Data` and
+///   `/private` aliases. A non-ASCII byte in the first component, or in a
+///   component compared against an alias, is refused too: case-insensitive
+///   APFS folds Unicode, so `/Networ\u{212A}` (KELVIN SIGN) is `/Network`.
+/// - Linux: `/net`, `/misc` and gvfs under `/run/user/<uid>` or
+///   `/var/run/user/<uid>`, matched exactly.
+fn is_automount(components: &[&[u8]], host: Host) -> bool {
     match host {
-        Host::MacOs => under(b"/net", true) || under(b"/Network", true),
+        Host::MacOs => {
+            let mut parts = components;
+            // `Some(true)`: matches; `None`: non-ASCII, so it might after folding.
+            let matches = |part: &[u8], name: &str| {
+                part.is_ascii()
+                    .then(|| part.eq_ignore_ascii_case(name.as_bytes()))
+            };
+            for (index, name) in ["System", "Volumes", "Data"].iter().enumerate() {
+                match parts.get(index).map(|part| matches(part, name)) {
+                    Some(None) => return true,
+                    Some(Some(true)) => {}
+                    _ => break,
+                }
+                if index == 2 {
+                    parts = &parts[3..];
+                }
+            }
+            match parts.first().map(|part| matches(part, "private")) {
+                Some(None) => return true,
+                Some(Some(true)) => parts = &parts[1..],
+                _ => {}
+            }
+            parts.first().is_some_and(|first| {
+                ["net", "Network", "home"]
+                    .iter()
+                    .any(|root| matches(first, root) != Some(false))
+            })
+        }
         Host::Linux => {
-            under(b"/net", false)
-                || under(b"/misc", false)
-                || bytes
-                    .strip_prefix(b"/run/user/")
-                    .and_then(|rest| {
-                        let uid = rest.iter().position(|&byte| byte == b'/')?;
-                        let (uid, rest) = rest.split_at(uid);
-                        (!uid.is_empty() && uid.iter().all(u8::is_ascii_digit)).then_some(rest)
-                    })
-                    .is_some_and(|rest| {
-                        rest.strip_prefix(b"/gvfs")
-                            .is_some_and(|tail| tail.first().is_none_or(|&byte| byte == b'/'))
-                    })
+            let gvfs = |parts: &[&[u8]]| {
+                matches!(parts, [b"run", b"user", uid, b"gvfs", ..]
+                    if !uid.is_empty() && uid.iter().all(u8::is_ascii_digit))
+            };
+            matches!(components.first(), Some(&(b"net" | b"misc")))
+                || gvfs(components)
+                || components.first() == Some(&&b"var"[..]) && gvfs(&components[1..])
         }
         Host::Windows | Host::Other => false,
     }
@@ -396,8 +414,8 @@ fn is_automount(path: &str, host: Host) -> bool {
 /// drive-letter, DOS-device and colon rules apply only on `Host::Windows`:
 /// elsewhere `Aux`, `nul.wav` and `:` (how macOS stores a Finder name's
 /// `/`) are ordinary names. The automount roots apply only on macOS and
-/// Linux (see `is_automount`). Namespace, network and dot-component paths
-/// are refused everywhere.
+/// Linux (see `is_automount`). Relative paths, empty components, and
+/// namespace, network and dot-component paths are refused everywhere.
 fn restore_allowed(path: &str, host: Host) -> bool {
     let windows = host == Host::Windows;
     let bytes = path.as_bytes();
@@ -413,15 +431,27 @@ fn restore_allowed(path: &str, host: Host) -> bool {
         }
         _ => path,
     };
+    // Only an absolute path (`/…`, or `C:\…` on Windows) with no empty
+    // component (`//`, either slash) is taken, so the components below are
+    // exactly what the OS will walk from the root.
+    let rooted = match rest.as_bytes().first() {
+        Some(b'/') => true,
+        Some(b'\\') => windows,
+        _ => false,
+    };
+    if !rooted {
+        return false;
+    }
+    let components: Vec<&[u8]> = rest.as_bytes()[1..].split(|&byte| is_slash(byte)).collect();
+    if components.iter().any(|part| part.is_empty()) {
+        return false;
+    }
     path_allowed(path)
         && win32_namespace(bytes).is_none()
         && !is_nt_prefix(bytes)
         && !is_remote(path)
-        && !is_automount(path, host)
-        && !rest
-            .as_bytes()
-            .split(|&byte| is_slash(byte))
-            .any(|part| part == b"." || part == b"..")
+        && !is_automount(&components, host)
+        && !components.iter().any(|&part| part == b"." || part == b"..")
         && !(windows && rest.split(['\\', '/']).any(is_dos_device))
         && !(windows && has_stray_colon(bytes))
 }
@@ -560,11 +590,16 @@ fn load_unguarded(path: &[u8], hash: u64, seq: u64, restore: bool) -> LoadOutcom
     // - Never a network path, not even to stat it. On Windows, touching
     //   `\\server\share` makes the OS sign in to that server with the
     //   user's NTLM hash, so a crafted project could harvest it. The same
-    //   goes for automounter and network roots on macOS (`/net/`,
-    //   `/Network/`) and Linux (`/net/`, `/misc/`, gvfs under
-    //   `/run/user/<uid>/`): looking a name up there mounts a remote share,
-    //   which reaches out to an attacker's server and may offer the user's
-    //   Kerberos or saved credentials, or hang the loader on a dead host.
+    //   goes for automounter and network roots on macOS (`/net`,
+    //   `/Network`, `/home`, also via `/System/Volumes/Data` and
+    //   `/private`) and Linux (`/net`, `/misc`, gvfs under
+    //   `/run/user/<uid>/` or `/var/run/user/<uid>/`): looking a name up
+    //   there mounts a remote share, which reaches out to an attacker's
+    //   server and may offer the user's Kerberos or saved credentials, or
+    //   hang the loader on a dead host. The roots are matched on whole
+    //   components of an absolute path with no empty component, and on
+    //   macOS a non-ASCII first component is refused, since APFS folds
+    //   Unicode case (`/Networ\u{212A}` is `/Network`).
     // - Never a namespace path (`\\?\`, `//?/`, `\\.\`, `//./`, `\??\`).
     //   Win32 normalizes the forward forms, so `..` can walk a drive path
     //   into UNC or device space, e.g. `//?/C:/../../UNC/srv/share/x.wav`;
@@ -1132,6 +1167,8 @@ mod tests {
         }
     }
 
+    const HOSTS: [Host; 4] = [Host::Windows, Host::MacOs, Host::Linux, Host::Other];
+
     #[test]
     fn restore_refuses_automount_roots_on_macos_and_linux() {
         let mac_refused = [
@@ -1140,7 +1177,21 @@ mod tests {
             "/NET/host/a.wav",
             "/network/servers/a.wav",
             "/Net",
-            "/net/",
+            "/home/todd/a.wav",
+            "/HOME",
+            "/System/Volumes/Data/net/x.wav",
+            "/system/volumes/data/Network/x.wav",
+            "/System/Volumes/Data/home/x.wav",
+            "/private/net/x.wav",
+            "/PRIVATE/home/x.wav",
+            "/System/Volumes/Data/private/net/x.wav",
+            // APFS folds these to `/Network`, `/net`, `/System`, `/private`.
+            "/Networ\u{212A}/x.wav",
+            "/n\u{0435}t/x.wav",
+            "/\u{17F}ystem/Volumes/Data/net/x.wav",
+            "/System/Volumes/Dat\u{e1}/x.wav",
+            "/priv\u{e1}te/net/x.wav",
+            "/Caf\u{e9}/a.wav",
         ];
         for refused in mac_refused {
             assert!(!restore_allowed(refused, Host::MacOs), "{refused}");
@@ -1152,36 +1203,100 @@ mod tests {
             "/misc",
             "/run/user/1000/gvfs/smb-share:server=h,share=s/a.wav",
             "/run/user/0/gvfs",
+            "/var/run/user/1000/gvfs/a.wav",
+            "/var/run/user/0/gvfs",
         ];
         for refused in linux_refused {
             assert!(!restore_allowed(refused, Host::Linux), "{refused}");
         }
-        // Linux paths are case-sensitive; macOS has no /misc or gvfs root.
-        for allowed in ["/NET/host/a.wav", "/Misc/a.wav", "/Network/a.wav"] {
+        // Linux matches exactly; macOS has no /misc or gvfs root, and only
+        // the first component matters there.
+        for allowed in [
+            "/NET/host/a.wav",
+            "/Misc/a.wav",
+            "/Network/a.wav",
+            "/home/todd/a.wav",
+            "/private/net/a.wav",
+            "/System/Volumes/Data/net/a.wav",
+            "/Caf\u{e9}/a.wav",
+            "/run/user/1000/GVFS/a.wav",
+        ] {
             assert!(restore_allowed(allowed, Host::Linux), "{allowed}");
         }
-        for allowed in ["/misc/a.wav", "/run/user/1000/gvfs/a.wav"] {
+        for allowed in [
+            "/misc/a.wav",
+            "/run/user/1000/gvfs/a.wav",
+            "/var/run/user/1000/gvfs/a.wav",
+            "/Users/Jos\u{e9}/Breaks/a.wav",
+            "/private/var/folders/x/a.wav",
+            "/System/Volumes/Data/Users/a/b.wav",
+            "/System/Library/a.wav",
+        ] {
             assert!(restore_allowed(allowed, Host::MacOs), "{allowed}");
         }
-        // Only the roots themselves count, not look-alike names or deeper dirs.
+        // Only whole root components count, not look-alikes or deeper dirs.
         for allowed in [
             "/network.wav",
             "/netherlands/a.wav",
+            "/home2/a.wav",
+            "/homes/a.wav",
             "/miscellany/a.wav",
-            "/Users/todd/net/a.wav",
-            "/home/todd/misc/a.wav",
+            "/Users/a/net/x.wav",
+            "/Users/todd/home/a.wav",
+            "/opt/misc/a.wav",
             "/run/user/1000/gvfsx/a.wav",
             "/run/user/abc/gvfs/a.wav",
-            "/run/user//gvfs/a.wav",
+            "/var/run/user/abc/gvfs/a.wav",
+            "/privatenet/a.wav",
         ] {
-            assert!(restore_allowed(allowed, Host::MacOs), "{allowed}");
-            assert!(restore_allowed(allowed, Host::Linux), "{allowed}");
+            for host in HOSTS {
+                assert!(restore_allowed(allowed, host), "{allowed} on {host:?}");
+            }
         }
         // Windows and other hosts don't have these roots.
         for path in mac_refused.iter().chain(&linux_refused) {
-            assert!(restore_allowed(path, Host::Other), "{path}");
+            if path.is_ascii() {
+                assert!(restore_allowed(path, Host::Other), "{path}");
+                // The gvfs name holds a `:`, which Windows refuses anyway.
+                assert!(
+                    path.contains(':') || restore_allowed(path, Host::Windows),
+                    "{path}"
+                );
+            }
         }
-        assert!(restore_allowed("/net/host/a.wav", Host::Windows));
+    }
+
+    #[test]
+    fn restore_takes_only_absolute_paths_without_empty_components() {
+        for refused in [
+            "",
+            "a.wav",
+            "Breaks/a.wav",
+            "/",
+            "/Users//a.wav",
+            "/Users/a/",
+            "/run/user//gvfs/a.wav",
+            "/net//host/a.wav",
+            "//net/host/a.wav",
+            r"/Users\\a.wav",
+            r"/Users/\a.wav",
+        ] {
+            for host in HOSTS {
+                assert!(!restore_allowed(refused, host), "{refused:?} on {host:?}");
+            }
+        }
+        // `\` is a root only on Windows, and a drive path must be rooted.
+        assert!(restore_allowed(r"\Breaks\a.wav", Host::Windows));
+        for host in [Host::MacOs, Host::Linux, Host::Other] {
+            assert!(!restore_allowed(r"\Breaks\a.wav", host), "{host:?}");
+            assert!(!restore_allowed(r"C:\Breaks\a.wav", host), "{host:?}");
+        }
+        assert!(restore_allowed(r"C:\Breaks\a.wav", Host::Windows));
+        assert!(!restore_allowed(r"C:\Breaks\\a.wav", Host::Windows));
+        assert!(!restore_allowed(r"C:\", Host::Windows));
+        // Choose is unchanged.
+        assert!(path_allowed("Breaks/a.wav"));
+        assert!(path_allowed("/Users//a.wav"));
     }
 
     #[test]
