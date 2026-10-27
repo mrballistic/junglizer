@@ -24,6 +24,9 @@ const TARGET_PROMPT: &str = if DROP_SUPPORTED {
 const NOT_AUDIO: &str = "Junglizer can load WAV, AIFF or MP3 files.";
 const FREE_PACKS: &str = "Need breaks? Free packs from KAN Samples";
 const FREE_PACKS_URL: &str = "https://kansamples.com/blogs/free-drum-and-bass-sample-packs";
+/// Why a Blocked break wasn't opened.
+pub(crate) const BLOCKED_HINT: &str = "Junglizer doesn’t open files from network or system locations automatically when a project loads. Use Relink… to open it.";
+
 /// Asked before the empty state's amen link replaces missing breaks.
 const AMEN_QUESTION: &str = "Replace all four breaks with the Junglizer amen? Slices and placements on missing breaks will be removed.";
 /// The file types Junglizer decodes, for the dialog filter and drops.
@@ -109,6 +112,9 @@ pub(crate) enum SlotStatus {
     Ready(Reading),
     Loading,
     Missing,
+    /// A restore the loader refused to open (a network or system location).
+    /// Behaves like `Missing`; only the label and explanation differ.
+    Blocked,
     Unreadable,
 }
 
@@ -221,7 +227,10 @@ pub(crate) fn apply_result(
         LoadOutcome::Loaded(audio) => audio,
         LoadOutcome::Refused(refusal) => return Err(refusal.message()),
         // A chosen file that vanished before it loaded reads the same.
-        LoadOutcome::Unreadable | LoadOutcome::Missing => return Err(UNREADABLE),
+        // Blocked comes only from a Restore, never from a chosen file.
+        LoadOutcome::Unreadable | LoadOutcome::Missing | LoadOutcome::Blocked => {
+            return Err(UNREADABLE);
+        }
     };
     let frames = u32::try_from(audio.sample.frames.len())
         .ok()
@@ -293,6 +302,7 @@ impl JunglizerUi {
                     .filter(|r| r.path_hash == entry.path_hash());
                 match restored.map(|r| r.outcome) {
                     Some(LoadOutcome::Missing) => SlotStatus::Missing,
+                    Some(LoadOutcome::Blocked) => SlotStatus::Blocked,
                     Some(LoadOutcome::Unreadable | LoadOutcome::Refused(_)) => {
                         SlotStatus::Unreadable
                     }
@@ -414,14 +424,14 @@ impl JunglizerUi {
         }
     }
 
-    /// A blank slot just loads. A missing or unreadable break is relinked,
+    /// A blank slot just loads. A missing, blocked or unreadable break is relinked,
     /// which keeps its slices and placements. Any other break, built-in or
     /// user, asks first, because the new file replaces its slices and
     /// placements.
     fn drop_into_slot(&mut self, slot: usize, path: PathBuf) {
         match self.slot_status(slot) {
             SlotStatus::Blank => self.load_path(slot, path, LoadMode::Load),
-            SlotStatus::Missing | SlotStatus::Unreadable => {
+            SlotStatus::Missing | SlotStatus::Blocked | SlotStatus::Unreadable => {
                 self.load_path(slot, path, LoadMode::Relink);
             }
             SlotStatus::Builtin | SlotStatus::Ready(_) | SlotStatus::Loading => {
@@ -697,7 +707,7 @@ impl JunglizerUi {
                 ui.colored_label(MUTED, "Loading…")
                     .on_hover_text(file_name(&path));
             }
-            SlotStatus::Missing | SlotStatus::Unreadable => {
+            SlotStatus::Missing | SlotStatus::Blocked | SlotStatus::Unreadable => {
                 if ui
                     .add_enabled(editable, egui::Button::new("Relink…"))
                     .on_disabled_hover_text(LOCKED_HINT)
@@ -705,12 +715,18 @@ impl JunglizerUi {
                 {
                     self.choose_file(slot, LoadMode::Relink);
                 }
-                let label = if status == SlotStatus::Missing {
-                    "Missing"
-                } else {
-                    "Unreadable"
-                };
-                ui.colored_label(MUTED, label).on_hover_text(path);
+                match status {
+                    SlotStatus::Blocked => {
+                        ui.colored_label(MUTED, "Not opened")
+                            .on_hover_text(BLOCKED_HINT);
+                    }
+                    SlotStatus::Missing => {
+                        ui.colored_label(MUTED, "Missing").on_hover_text(path);
+                    }
+                    _ => {
+                        ui.colored_label(MUTED, "Unreadable").on_hover_text(path);
+                    }
+                }
             }
             SlotStatus::Blank => {}
         }
@@ -727,6 +743,10 @@ impl JunglizerUi {
             SlotStatus::Loading => Some(format!("Loading {}…", file_name(path))),
             SlotStatus::Missing => Some(format!(
                 "Can’t find {}. Use Relink… to find it.",
+                file_name(path)
+            )),
+            SlotStatus::Blocked => Some(format!(
+                "Junglizer doesn’t open files from network or system locations automatically when a project loads. Use Relink… to open {}.",
                 file_name(path)
             )),
             SlotStatus::Unreadable => Some(format!(
@@ -764,12 +784,15 @@ impl JunglizerUi {
     }
 
     /// True when no slot has a break that can sound: every slot is blank,
-    /// or holds a user break that's missing or unreadable.
+    /// or holds a user break that's missing, blocked or unreadable.
     pub(crate) fn no_playable_break(&self) -> bool {
         (0..self.slot_audio.len()).all(|slot| {
             matches!(
                 self.slot_status(slot),
-                SlotStatus::Blank | SlotStatus::Missing | SlotStatus::Unreadable
+                SlotStatus::Blank
+                    | SlotStatus::Missing
+                    | SlotStatus::Blocked
+                    | SlotStatus::Unreadable
             )
         })
     }
@@ -1570,6 +1593,30 @@ mod tests {
         library.run_pending();
         editor.refresh_slot_audio();
         assert_eq!(editor.slot_status(1), SlotStatus::Missing);
+        editor.drop_files(DropTarget::Slot(1), &dropped("/x/found.wav"));
+        assert_eq!(
+            pending_load(&editor),
+            Some((1, "/x/found.wav", LoadMode::Relink))
+        );
+        assert_eq!(editor.confirm_unload, None);
+    }
+
+    #[test]
+    fn a_drop_on_a_blocked_break_relinks_it() {
+        let mut editor = JunglizerUi::new();
+        editor.params = Some(Arc::new(crate::JunglizerParams::default()));
+        let suggested = Library::builtin()[1].suggested;
+        let path = "//srv/share/think.wav";
+        editor.state.update(|s| {
+            s.load_user(1, path, 60_828, 4, &suggested[..8]).unwrap();
+        });
+        let library = &editor.params.as_ref().unwrap().library;
+        library
+            .request(1, path.as_bytes(), Purpose::Restore)
+            .unwrap();
+        library.run_pending();
+        editor.refresh_slot_audio();
+        assert_eq!(editor.slot_status(1), SlotStatus::Blocked);
         editor.drop_files(DropTarget::Slot(1), &dropped("/x/found.wav"));
         assert_eq!(
             pending_load(&editor),

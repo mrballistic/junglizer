@@ -390,8 +390,10 @@ impl Junglizer {
                     self.hold(slot, None, library);
                     match library.try_adopt(slot, hash, 0) {
                         Some(LoadOutcome::Loaded(audio)) => self.sources[slot] = Some(audio),
-                        // Missing, unreadable or refused: stay silent so the
-                        // bar falls back, and keep the markers for Relink.
+                        // Missing, blocked, unreadable or refused: stay
+                        // silent so the bar falls back, and keep the markers
+                        // for Relink. Blocked is final, even across reloads:
+                        // the same path is refused the same way.
                         // A Missing from before the last project load is
                         // stale, though: the drive may be back, so ask again
                         // (`load_state` clears `requested`).
@@ -1389,6 +1391,37 @@ mod audio_tests {
         assert!(st.sources[0].is_none());
         assert_eq!(st.ghost_source(&st.edit, 0), Some(1));
         assert!(st.edit.marker_set(0).unwrap().valid); // markers kept for Relink
+    }
+
+    #[test]
+    fn a_blocked_restore_holds_nothing_keeps_markers_and_is_not_re_requested() {
+        let params = JunglizerParams::default();
+        let lib = &params.library;
+        let mut st = Junglizer::load_sources();
+        st.edit
+            .load_user(0, "//srv/share/amen 174.wav", 60_828, 4, &WHOLE)
+            .unwrap();
+        st.reconcile_sources(lib); // posts Restore
+        lib.run_pending();
+        st.reconcile_sources(lib); // sees Blocked
+        assert!(matches!(
+            lib.result(0, Purpose::Restore).unwrap().outcome,
+            LoadOutcome::Blocked
+        ));
+        assert!(st.sources[0].is_none());
+        assert_eq!(st.ghost_source(&st.edit, 0), Some(1));
+        assert!(st.edit.marker_set(0).unwrap().valid);
+        let seq = lib.result(0, Purpose::Restore).unwrap().seq;
+        for _ in 0..3 {
+            st.reconcile_sources(lib);
+            lib.run_pending();
+        }
+        assert_eq!(
+            lib.result(0, Purpose::Restore).unwrap().seq,
+            seq,
+            "no re-request"
+        );
+        assert!(st.sources[0].is_none());
     }
 
     #[test]
