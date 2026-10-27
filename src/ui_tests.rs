@@ -55,7 +55,10 @@ fn fixture(
     for source in 0..4 {
         editor.ensure_markers(source, count);
     }
-    if name != "ghost-stopped" && name != "missing-samples" {
+    if !matches!(
+        name,
+        "ghost-stopped" | "missing-samples" | "first-run" | "empty"
+    ) {
         editor.state.update(|s| {
             for (slot, source, slice, length) in [
                 (0, 0, 0, 3),
@@ -197,6 +200,18 @@ fn fixture(
         params.set_normalized(P::EditBreak.into(), 1.0 / 3.0);
         params.set_normalized(P::EditSlice.into(), 0.0);
     }
+    if name == "first-run" {
+        editor.first_run = true;
+    }
+    if name == "empty" {
+        // Everything unloaded: no slot can sound.
+        editor.state.update(|s| {
+            for slot in 0..4 {
+                s.unload(slot);
+            }
+        });
+        editor.refresh_slot_audio();
+    }
     (editor, params, ctx)
 }
 
@@ -271,6 +286,8 @@ fn render_editor_states() {
         "blank-slot",
         "missing",
         "unload-modal",
+        "first-run",
+        "empty",
     ] {
         let (mut ui, params, ctx) = fixture(name);
         let mut editor =
@@ -394,4 +411,49 @@ fn waveforms_come_from_the_embedded_breaks() {
         assert!(editor.slot_audio[slot].sample().is_some());
         assert!(editor.slot_audio[slot].peaks.iter().any(|&p| p > 0.0));
     }
+}
+
+#[test]
+fn the_empty_state_shows_when_no_slot_can_sound_and_the_amen_restores() {
+    let (mut editor, _, _) = fixture("empty");
+    assert!(editor.no_playable_break());
+    assert!(editor.shows_break_target());
+    editor.use_builtin_amen();
+    assert!(!editor.no_playable_break());
+    for slot in 0..4 {
+        assert_eq!(
+            editor.state.get().slots[slot].kind,
+            crate::edit_state::SlotKind::Builtin
+        );
+        assert!(editor.state.get().marker_set(slot).is_some_and(|m| m.valid));
+    }
+}
+
+#[test]
+fn a_missing_break_alone_counts_as_empty() {
+    let (mut editor, _, _) = fixture("missing");
+    editor.state.update(|s| {
+        for slot in [0, 2, 3] {
+            s.unload(slot);
+        }
+    });
+    editor.refresh_slot_audio();
+    assert!(editor.no_playable_break());
+    // A built-in or loaded break is enough to hide the target.
+    let (editor, _, _) = fixture("blank-slot");
+    assert!(!editor.shows_break_target());
+}
+
+#[test]
+fn a_refused_first_run_choice_keeps_the_prompt_up() {
+    let (mut editor, _, _) = fixture("first-run");
+    let before = editor.state.get().clone();
+    let path = std::env::temp_dir().join("junglizer-fixture-not-audio.wav");
+    std::fs::write(&path, b"not audio").unwrap();
+    let path = path.to_str().unwrap().to_owned();
+    let params = editor.params.clone().unwrap();
+    choose(&mut editor, &params, 0, &path, ui_slots::LoadMode::FirstRun);
+    assert!(editor.first_run);
+    assert_eq!(*editor.state.get(), before);
+    assert!(editor.message.contains("couldn’t read"));
 }
