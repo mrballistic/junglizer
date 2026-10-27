@@ -23,3 +23,7 @@ codesign --verify --deep --strict Junglizer.component
 Repeat for VST3 and CLAP. **Create the release ZIPs after stapling**: the ZIP itself cannot carry a stapled ticket. Extract each final ZIP into a clean directory and run `stapler validate` and `codesign --verify --deep --strict` on the extracted bundle. Regenerate `SHA256-arm64.txt` and `SHA256-x86_64.txt`, replace the draft assets, and publish the release only after checking all six uploads.
 
 For `v0.9.0-beta.1`, Apple accepted the arm64 submission `36b6bb1b-0fd0-4734-837c-b689859b1762` and Intel submission `4fa786a8-8e72-4769-93c9-d80c29f626ea`. Every bundle was stapled and validated before distribution.
+
+## Windows and Linux zips are unsigned
+
+The same tag workflow (and a manual dispatch) also builds `Junglizer-<tag>-windows-x86_64-{vst3,clap}.zip` and `Junglizer-<tag>-linux-x86_64-{vst3,clap}.zip`, with `SHA256-windows.txt` and `SHA256-linux.txt`. These are **not** code signed. Windows SmartScreen may warn about the unsigned binaries, and nothing here needs Apple notarization. Leave them in the draft release as built; only the six macOS archives get replaced by the steps above. Dispatch runs name their zips `dispatch-<short sha>` instead of a tag.

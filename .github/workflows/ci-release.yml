@@ -18,7 +18,7 @@ jobs:
   test:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.92.0
@@ -39,7 +39,7 @@ jobs:
             arch: x86_64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.92.0
@@ -54,27 +54,97 @@ jobs:
           for format in component vst3 clap; do
             ditto -c -k --sequesterRsrc --keepParent "target/bundles/Junglizer.$format" "dist/Junglizer-${GITHUB_REF_NAME}-${{ matrix.arch }}-$format.zip"
           done
-          (cd dist && shasum -a 256 *.zip > "SHA256-${{ matrix.arch }}.txt")
-      - uses: actions/upload-artifact@v4
+          (cd dist && shasum -a 256 -- *.zip > "SHA256-${{ matrix.arch }}.txt")
+      - uses: actions/upload-artifact@v7
         with:
           name: bundles-${{ matrix.arch }}
           path: dist/*
           if-no-files-found: error
 
+  # Windows and Linux ship VST3 and CLAP only (AUv2 is macOS-only). Both run on
+  # release tags and on manual dispatch, so they can be tested without a tag
+  # and without spending macOS minutes. cargo-truce builds each format with
+  # --no-default-features --features <format>, so the crate's `au` and
+  # `standalone` defaults are never enabled here.
+  bundles-windows:
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+      - name: Install Truce build tool
+        run: cargo install cargo-truce --version 6.3.0 --locked
+      - name: Build VST3 and CLAP
+        run: cargo truce build --vst3 --clap
+      - name: Pack each format
+        shell: pwsh
+        run: |
+          # A dispatch run is on a branch, whose name may contain slashes.
+          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { "dispatch-$($env:GITHUB_SHA.Substring(0, 7))" }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          foreach ($format in 'vst3', 'clap') {
+            Compress-Archive -Path "target/bundles/Junglizer.$format" -DestinationPath "dist/Junglizer-$version-windows-x86_64-$format.zip"
+          }
+          Get-ChildItem dist -Filter *.zip | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($_.Name)"
+          } | Set-Content -Encoding ascii dist/SHA256-windows.txt
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bundles-windows
+          path: dist/*
+          if-no-files-found: error
+
+  bundles-linux:
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    needs: test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.92.0
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zip pkg-config libx11-dev libx11-xcb-dev libxcb1-dev libxcb-icccm4-dev libxcb-dri2-0-dev libxcursor-dev libxrandr-dev libgl1-mesa-dev libdbus-1-dev
+      - name: Install Truce build tool
+        run: cargo install cargo-truce --version 6.3.0 --locked
+      - name: Build VST3 and CLAP
+        run: cargo truce build --vst3 --clap
+      - name: Pack each format
+        shell: bash
+        run: |
+          # A dispatch run is on a branch, whose name may contain slashes.
+          if [ "$GITHUB_REF_TYPE" = tag ]; then version="$GITHUB_REF_NAME"; else version="dispatch-${GITHUB_SHA::7}"; fi
+          mkdir -p dist
+          for format in vst3 clap; do
+            (cd target/bundles && zip -r -X "$GITHUB_WORKSPACE/dist/Junglizer-$version-linux-x86_64-$format.zip" "Junglizer.$format")
+          done
+          (cd dist && sha256sum -- *.zip > SHA256-linux.txt)
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bundles-linux
+          path: dist/*
+          if-no-files-found: error
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: bundles
+    needs: [bundles, bundles-windows, bundles-linux]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           pattern: bundles-*
           path: dist
           merge-multiple: true
-      - name: Create draft beta with six pre-notarization archives
+      - name: Create draft beta with unsigned archives
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
@@ -84,4 +154,4 @@ jobs:
             --draft \
             --prerelease \
             --title "Junglizer $GITHUB_REF_NAME" \
-            --notes "Draft build artifacts. Sign, notarize, staple, and replace all archives and checksums before publishing. See docs/RELEASE-SIGNING.md."
+            --notes "Draft build artifacts. The six macOS archives must be signed, notarized, stapled, and replaced, with their checksums, before publishing. The Windows and Linux zips (VST3 and CLAP) are unsigned. See docs/RELEASE-SIGNING.md."
