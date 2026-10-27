@@ -281,6 +281,14 @@ fn choose(
 fn render_editor_states() {
     let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join(".impeccable/review");
     std::fs::create_dir_all(&directory).unwrap();
+    // JUNGLIZER_RENDER_SCALE (default 1) sets pixels-per-point and
+    // JUNGLIZER_RENDER_ONLY renders one named state; both exist so
+    // tools/screenshots/render_site_screenshot.sh can make a 2x image.
+    let scale: f64 = std::env::var("JUNGLIZER_RENDER_SCALE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1.0);
+    let only = std::env::var("JUNGLIZER_RENDER_ONLY").ok();
     for name in [
         "ghost-stopped",
         "selected",
@@ -304,13 +312,16 @@ fn render_editor_states() {
         "first-run",
         "empty",
     ] {
+        if only.as_deref().is_some_and(|o| o != name) {
+            continue;
+        }
         let (mut ui, params, ctx) = fixture(name);
         let mut editor =
             truce_egui::EguiEditor::new(params.clone(), (1100, 720), move |root, _| {
                 ui.ui(root, &ctx)
             })
             .with_visuals(visuals());
-        editor.set_scale_factor(1.0);
+        editor.set_scale_factor(scale);
         let (rgba, width, height) = editor
             .screenshot(params)
             .expect("GPU screenshot unavailable");
