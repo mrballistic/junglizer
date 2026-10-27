@@ -334,6 +334,16 @@ impl JunglizerUi {
             self.message = LOCKED_HINT.into();
             return;
         }
+        // A first-run load clears the other slots only if the prompt is
+        // still up on an untouched instance. The file decodes after the
+        // dialog closes; if the state was edited or restored meanwhile, or
+        // Keep the amen was clicked, it loads like any other choice.
+        let mode =
+            if mode == LoadMode::FirstRun && !(self.first_run && self.state.get().is_pristine()) {
+                LoadMode::Load
+            } else {
+                mode
+            };
         // Work on a copy so a failure never reaches the DSP.
         let mut next = self.state.get().clone();
         match apply_result(&mut next, slot, path, mode, outcome) {
@@ -896,6 +906,64 @@ mod tests {
         // Writing it again is harmless.
         write_flag(&flag).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// An editor with its first-run prompt up and a FirstRun load in
+    /// flight for slot 0.
+    fn editor_with_pending_first_run() -> JunglizerUi {
+        let mut editor = JunglizerUi::new();
+        editor.params = Some(Arc::new(crate::JunglizerParams::default()));
+        editor.first_run = true;
+        editor.pending = PendingLoad::Choosing {
+            slot: 0,
+            seq: 1,
+            path: "/x/mine 174.wav".to_owned(),
+            mode: LoadMode::FirstRun,
+        };
+        editor
+    }
+
+    /// What `poll_pending_load` does once the loader reports back.
+    fn finish_pending(editor: &mut JunglizerUi, outcome: &LoadOutcome) {
+        let PendingLoad::Choosing {
+            slot, path, mode, ..
+        } = std::mem::replace(&mut editor.pending, PendingLoad::None)
+        else {
+            panic!("no pending load");
+        };
+        editor.commit_load(slot, &path, mode, outcome);
+    }
+
+    #[test]
+    fn a_first_run_load_never_clears_slots_edited_while_it_decoded() {
+        let mut editor = editor_with_pending_first_run();
+        editor.state.update(|s| {
+            s.set_slice_count(2, 16);
+        });
+        assert!(!editor.state.get().is_pristine());
+        finish_pending(&mut editor, &loaded(60_828, 4));
+        let state = editor.state.get();
+        assert_eq!(state.slots[0].kind, SlotKind::User);
+        assert_eq!(state.slots[0].path(), Some("/x/mine 174.wav"));
+        assert_eq!(
+            state.slots[1..].iter().map(|s| s.kind).collect::<Vec<_>>(),
+            [SlotKind::Builtin; 3]
+        );
+        assert_eq!(state.slice_count(2), 16);
+    }
+
+    #[test]
+    fn keep_the_amen_during_a_first_run_load_keeps_the_other_slots() {
+        let mut editor = editor_with_pending_first_run();
+        // Keep the amen dismisses the prompt while the file decodes.
+        editor.first_run = false;
+        finish_pending(&mut editor, &loaded(60_828, 4));
+        let state = editor.state.get();
+        assert_eq!(state.slots[0].kind, SlotKind::User);
+        assert_eq!(
+            state.slots[1..].iter().map(|s| s.kind).collect::<Vec<_>>(),
+            [SlotKind::Builtin; 3]
+        );
     }
 
     #[test]
