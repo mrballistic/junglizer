@@ -10,7 +10,7 @@ Junglizer is made by Todd Greco (mrballistic). Junglizer’s own 174 BPM amen sh
 - Slice each source break into 1 to 32 slices (a separate count per break), drag markers onto the hits, audition, mute and tag bass hits.
 - Pick a different break for each of the four bars; until slices are placed, the full break plays underneath as a ghost.
 - Place slices on the player grid with per-slice length, Original or Fit speed, bit depth, retriggers (up to 8×) and locks.
-- Suggested fills per bar, or Live variations for a new phrase every four bars; freeze the one you like.
+- Fill and lock on each bar header, with Undo (Cmd/Ctrl+Z) for Fill and Remove; a Mode control (Edit, Live, Frozen) for a new phrase every four bars or keeping the one you like.
 - One crossfader from Thin (high-passed) through Dry to Thicc, which layers a decaying 808 on tagged bass hits, down to a sub octave.
 - Export the phrase as a four-bar MIDI file (slice notes, bar sources and controller data) to Junglizer/Exports in your operating system’s Music folder.
 - Every control is a host automation parameter; phrases, markers, placements and locks are saved with the project.

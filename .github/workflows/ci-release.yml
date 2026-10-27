@@ -52,7 +52,12 @@ jobs:
         run: |
           mkdir -p dist
           for format in component vst3 clap; do
-            ditto -c -k --sequesterRsrc --keepParent "target/bundles/Junglizer.$format" "dist/Junglizer-${GITHUB_REF_NAME}-${{ matrix.arch }}-$format.zip"
+            # Stage the bundle and the notice together so both sit at the zip root.
+            stage="$(mktemp -d)"
+            ditto "target/bundles/Junglizer.$format" "$stage/Junglizer.$format"
+            cp THIRD-PARTY-NOTICES.md "$stage/"
+            ditto -c -k --sequesterRsrc "$stage" "dist/Junglizer-${GITHUB_REF_NAME}-${{ matrix.arch }}-$format.zip"
+            rm -rf "$stage"
           done
           (cd dist && shasum -a 256 -- *.zip > "SHA256-${{ matrix.arch }}.txt")
       - uses: actions/upload-artifact@v7
@@ -86,7 +91,7 @@ jobs:
           $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { "dispatch-$($env:GITHUB_SHA.Substring(0, 7))" }
           New-Item -ItemType Directory -Force dist | Out-Null
           foreach ($format in 'vst3', 'clap') {
-            Compress-Archive -Path "target/bundles/Junglizer.$format" -DestinationPath "dist/Junglizer-$version-windows-x86_64-$format.zip"
+            Compress-Archive -Path "target/bundles/Junglizer.$format", "THIRD-PARTY-NOTICES.md" -DestinationPath "dist/Junglizer-$version-windows-x86_64-$format.zip"
           }
           Get-ChildItem dist -Filter *.zip | ForEach-Object {
             $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
@@ -123,6 +128,7 @@ jobs:
           mkdir -p dist
           for format in vst3 clap; do
             (cd target/bundles && zip -r -X "$GITHUB_WORKSPACE/dist/Junglizer-$version-linux-x86_64-$format.zip" "Junglizer.$format")
+            zip -X "dist/Junglizer-$version-linux-x86_64-$format.zip" THIRD-PARTY-NOTICES.md
           done
           (cd dist && sha256sum -- *.zip > SHA256-linux.txt)
       - uses: actions/upload-artifact@v7
