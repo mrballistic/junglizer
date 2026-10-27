@@ -326,14 +326,27 @@ fn path_allowed(path: &str) -> bool {
 /// than `path_allowed`; see the comment where it is used for why.
 fn restore_allowed(path: &str) -> bool {
     let bytes = path.as_bytes();
+    // A drive letter must start an absolute path (`C:\`, `C:/`). A
+    // drive-relative `C:CON` or `C:..\x` would hide its first component
+    // from the checks below. Strip `C:` so they see the rest.
+    let rest = match bytes {
+        [letter, b':', ..] if letter.is_ascii_alphabetic() => {
+            if !bytes.get(2).is_some_and(|&byte| is_slash(byte)) {
+                return false;
+            }
+            &path[2..]
+        }
+        _ => path,
+    };
     path_allowed(path)
         && win32_namespace(bytes).is_none()
         && !is_nt_prefix(bytes)
         && !is_remote(path)
-        && !bytes
+        && !rest
+            .as_bytes()
             .split(|&byte| is_slash(byte))
             .any(|part| part == b"." || part == b"..")
-        && !path.split(['\\', '/']).any(is_dos_device)
+        && !rest.split(['\\', '/']).any(is_dos_device)
         && !has_stray_colon(bytes)
 }
 
@@ -775,6 +788,21 @@ mod tests {
             outcome_of(&lib, br"\\.\PhysicalDrive0"),
             LoadOutcome::Unreadable
         ));
+    }
+
+    #[test]
+    fn restore_refuses_drive_relative_paths() {
+        for refused in ["C:CON", "C:nul.wav", "C:x.wav", "C:", r"c:..\x.wav"] {
+            assert!(!restore_allowed(refused), "{refused}");
+        }
+        for allowed in [r"C:\a.wav", "C:/a.wav", r"c:\Breaks\x.wav"] {
+            assert!(restore_allowed(allowed), "{allowed}");
+        }
+        // The rest after `C:\` gets the device and dot checks.
+        assert!(!restore_allowed(r"C:\CON"));
+        assert!(!restore_allowed(r"C:\..\x.wav"));
+        // Choose is unchanged.
+        assert!(path_allowed("C:CON"));
     }
 
     #[test]
