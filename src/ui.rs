@@ -879,8 +879,36 @@ impl JunglizerUi {
 fn export_dir_label() -> String {
     crate::platform::export_dir().map_or_else(
         || "your Music folder".to_owned(),
-        |dir| dir.display().to_string(),
+        |dir| {
+            short_dir(
+                &dir,
+                dirs::home_dir().as_deref(),
+                cfg!(target_os = "windows"),
+            )
+        },
     )
+}
+
+/// A short form of `dir` for the status row: the home folder collapses to
+/// `~`, or on Windows only the last three components remain, as `…\a\b\c`.
+/// The full path stays in hover text.
+pub(crate) fn short_dir(
+    dir: &std::path::Path,
+    home: Option<&std::path::Path>,
+    windows: bool,
+) -> String {
+    if windows {
+        let parts: Vec<_> = dir
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        let tail = &parts[parts.len().saturating_sub(3)..];
+        return format!("…\\{}", tail.join("\\"));
+    }
+    match home.and_then(|h| dir.strip_prefix(h).ok()) {
+        Some(rest) => std::path::Path::new("~").join(rest).display().to_string(),
+        None => dir.display().to_string(),
+    }
 }
 
 impl EditorUi<JunglizerParams> for JunglizerUi {
@@ -980,15 +1008,22 @@ impl EditorUi<JunglizerParams> for JunglizerUi {
                     let message = if initial && self.state.get().frozen { "Frozen phrase repeats exactly. Unfreeze above to edit." }
                         else if initial && self.state.get().live_enabled { "A new phrase every four bars. Freeze the one you want to keep." }
                         else { &self.message };
-                    let response = ui.colored_label(ACCENT, message);
-                    if let Some(path) = self.export_path.clone() {
-                        response.on_hover_text(path.display().to_string());
-                        if ui.small_button(crate::platform::REVEAL_LABEL).clicked() {
-                            crate::platform::reveal(&path);
-                        }
-                    }
+                    // Credit first, fixed at the right, then the reveal button;
+                    // the message takes what's left and truncates, so nothing overlaps.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(egui::RichText::new(CREDIT).small().color(MUTED));
+                        let path = self.export_path.clone();
+                        if let Some(path) = &path {
+                            if ui.small_button(crate::platform::REVEAL_LABEL).clicked() {
+                                crate::platform::reveal(path);
+                            }
+                        }
+                        let full = path.as_ref().map(|p| p.display().to_string());
+                        let response = ui.add(egui::Label::new(egui::RichText::new(message).color(ACCENT)).truncate());
+                        match full {
+                            Some(full) => { response.on_hover_text(full); }
+                            None => { response.on_hover_text(message); }
+                        }
                     });
                 });
 
