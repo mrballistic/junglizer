@@ -26,3 +26,6 @@
 # Release zips pulled by site/deploy.sh
 /site/downloads/
 .superpowers/
+
+# Python bytecode from tools/
+tools/**/__pycache__/
