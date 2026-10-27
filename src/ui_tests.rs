@@ -2,6 +2,9 @@
 //! Run: cargo test render_editor_states -- --ignored --nocapture
 //! The GPU renderer requires normal desktop GPU access on macOS.
 use super::*;
+use crate::library::{Library, Purpose};
+use crate::sample::StereoSample;
+use std::path::Path;
 use std::sync::Arc;
 use truce::core::editor::{ClosureBridge, Editor};
 use truce::params::Params;
@@ -47,6 +50,7 @@ fn fixture(
         matches!(name, "playing" | "live-1" | "live-2" | "frozen-midi"),
     );
     let mut editor = JunglizerUi::new();
+    editor.params = Some(params.clone());
     let count = if name == "density-32" { 32 } else { 8 };
     for source in 0..4 {
         editor.ensure_markers(source, count);
@@ -137,8 +141,9 @@ fn fixture(
         params.set_normalized(P::Playback.into(), 1.0);
     }
     if name == "missing-samples" {
-        editor.sources = std::array::from_fn(|_| StereoSample::default());
-        editor.waveform = [[0.0; 512]; 4];
+        editor.slot_audio = std::array::from_fn(|_| {
+            ui_slots::SlotAudio::new((crate::edit_state::SlotKind::Builtin, 0), None)
+        });
         editor
             .state
             .update(|s| s.markers = [[Default::default(); 32]; 4]);
@@ -147,13 +152,100 @@ fn fixture(
         editor.export_path = Some(PathBuf::from(
             "~/Music/Junglizer/Exports/junglizer-example.mid",
         ));
-        editor.message = "MIDI saved to ~/Music/Junglizer/Exports. Drag to this Logic track, then choose MIDI region.";
+        editor.message = "MIDI saved to ~/Music/Junglizer/Exports. Drag to this Logic track, then choose MIDI region.".into();
     }
     if name == "export-failure" {
         editor.message =
-            "Could not save MIDI. Check write access to ~/Music/Junglizer/Exports and try again.";
+            "Could not save MIDI. Check write access to ~/Music/Junglizer/Exports and try again."
+                .into();
+    }
+    if name == "user-16-beats" {
+        // A 16-beat break at 174 BPM: the four built-in bars back to back,
+        // loaded through the library and committed as a dialog choice is.
+        let path = std::env::temp_dir().join("junglizer-fixture-break-174.wav");
+        write_wav(&path, &four_bars());
+        let path = path.to_str().unwrap().to_owned();
+        choose(&mut editor, &params, 1, &path, ui_slots::LoadMode::Load);
+        params.set_normalized(P::EditBreak.into(), 1.0 / 3.0);
+        params.set_normalized(P::EditSlice.into(), 0.0);
+    }
+    if name == "blank-slot" || name == "unload-modal" {
+        params.set_normalized(P::EditBreak.into(), 1.0 / 3.0);
+        params.set_normalized(P::EditSlice.into(), 0.0);
+    }
+    if name == "blank-slot" {
+        editor.state.update(|s| {
+            s.unload(1);
+        });
+    }
+    if name == "unload-modal" {
+        editor.confirm_unload = Some(1);
+        editor.unload_modal_fresh = true;
+    }
+    if name == "missing" {
+        // A user break whose file is gone: the restore reports Missing.
+        let path = "/Volumes/Old Drive/Breaks/think break 174.wav";
+        let suggested = Library::builtin()[1].suggested;
+        editor.state.update(|s| {
+            s.load_user(1, path, 60_828, 4, &suggested[..8]).unwrap();
+        });
+        params
+            .library
+            .request(1, path.as_bytes(), Purpose::Restore)
+            .unwrap();
+        params.library.run_pending();
+        params.set_normalized(P::EditBreak.into(), 1.0 / 3.0);
+        params.set_normalized(P::EditSlice.into(), 0.0);
     }
     (editor, params, ctx)
+}
+
+fn four_bars() -> StereoSample {
+    let builtin = Library::builtin();
+    StereoSample {
+        frames: builtin
+            .iter()
+            .flat_map(|b| b.sample.frames.iter().copied())
+            .collect(),
+        sample_rate: builtin[0].sample.sample_rate,
+    }
+}
+
+fn write_wav(path: &Path, sample: &StereoSample) {
+    let spec = hound::WavSpec {
+        channels: 2,
+        sample_rate: sample.sample_rate,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    };
+    let mut writer = hound::WavWriter::create(path, spec).unwrap();
+    for frame in &sample.frames {
+        writer.write_sample(frame[0]).unwrap();
+        writer.write_sample(frame[1]).unwrap();
+    }
+    writer.finalize().unwrap();
+}
+
+/// What `choose_file` and `poll_pending_load` do, without the dialog: the
+/// loader runs inline instead of on its thread.
+fn choose(
+    editor: &mut JunglizerUi,
+    params: &Arc<JunglizerParams>,
+    slot: usize,
+    path: &str,
+    mode: ui_slots::LoadMode,
+) {
+    editor.params = Some(params.clone());
+    editor.pending = PendingLoad::Choosing {
+        slot,
+        seq: 0,
+        path: path.to_owned(),
+        mode,
+    };
+    editor.poll_pending_load(&egui::Context::default());
+    params.library.run_pending();
+    editor.poll_pending_load(&egui::Context::default());
+    assert!(matches!(editor.pending, PendingLoad::None));
 }
 
 #[test]
@@ -175,6 +267,10 @@ fn render_editor_states() {
         "missing-samples",
         "export-success",
         "export-failure",
+        "user-16-beats",
+        "blank-slot",
+        "missing",
+        "unload-modal",
     ] {
         let (mut ui, params, ctx) = fixture(name);
         let mut editor =
@@ -266,4 +362,36 @@ fn placement_preview_tracks_original_fit_and_retrigger_time() {
         None,
         "original-speed preview must leave silence after the source slice ends"
     );
+}
+
+#[test]
+fn a_chosen_break_is_committed_with_its_reading_and_message() {
+    let (editor, _, _) = fixture("user-16-beats");
+    let slot = editor.state.get().slots[1];
+    assert_eq!(
+        (slot.kind, slot.beats, slot.slice_count),
+        (crate::edit_state::SlotKind::User, 16, 8)
+    );
+    assert_eq!(
+        editor.message,
+        "Loaded junglizer-fixture-break-174.wav: 16 beats · 174.0 BPM. Use ½ or ×2 if the tempo is off."
+    );
+    assert_eq!(editor.select_after_load, Some(1));
+}
+
+#[test]
+fn a_missing_restore_shows_as_missing() {
+    let (mut editor, _, _) = fixture("missing");
+    editor.refresh_slot_audio();
+    assert_eq!(editor.slot_status(1), ui_slots::SlotStatus::Missing);
+    assert_eq!(editor.slot_status(0), ui_slots::SlotStatus::Builtin);
+}
+
+#[test]
+fn waveforms_come_from_the_embedded_breaks() {
+    let editor = JunglizerUi::new();
+    for slot in 0..4 {
+        assert!(editor.slot_audio[slot].sample().is_some());
+        assert!(editor.slot_audio[slot].peaks.iter().any(|&p| p > 0.0));
+    }
 }

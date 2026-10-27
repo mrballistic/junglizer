@@ -46,6 +46,7 @@ clap-sys = { version = "0.5", optional = true }
 png = "0.18"
 crossbeam-queue = "0.3"
 symphonia = { version = "0.6", default-features = false, features = ["wav", "aiff", "pcm", "mp3"] }
+rfd = "0.17"
 
 # Custom profile for `cargo truce install --shell`. The shell-mode
 # build (`cargo build --profile shell --features ...,shell`) lands the

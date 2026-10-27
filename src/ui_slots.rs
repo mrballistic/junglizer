@@ -1,0 +1,681 @@
+//! The break slot controls: load, unload, relink and half/double.
+
+use super::{EDGE, JunglizerUi, MUTED, SOURCE_COLORS, apply_style};
+use crate::edit_state::{EditState, MAX_PATH_BYTES, SlotError, SlotKind};
+use crate::library::{Library, LoadOutcome, LoadedBreak, Purpose};
+use crate::sample::StereoSample;
+use crate::tempo::{self, Reading};
+use crate::{JunglizerParams, JunglizerParamsParamId as P};
+use egui::Ui;
+use std::sync::Arc;
+use std::time::Duration;
+use truce::prelude::PluginContext;
+
+/// Shown on every break control that's disabled while frozen or live.
+pub(crate) const LOCKED_HINT: &str = "Unfreeze or stop live variations to change breaks.";
+const UNREADABLE: &str = "Junglizer couldn’t read that file. Use a WAV, AIFF or MP3.";
+/// How many suggested markers a fresh load starts with.
+const LOAD_SLICES: usize = 8;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LoadMode {
+    Load,
+    Relink,
+    /// Loads into the slot and clears every other slot (the first-launch prompt).
+    #[allow(dead_code)] // chosen by the first-launch prompt (Task 9)
+    FirstRun,
+}
+
+/// A file the user chose that the loader hasn't finished yet. `seq` is 0
+/// until the library accepts the request.
+pub(crate) enum PendingLoad {
+    None,
+    Choosing {
+        slot: usize,
+        seq: u64,
+        path: String,
+        mode: LoadMode,
+    },
+}
+
+/// What the editor knows about one slot's audio.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum SlotStatus {
+    Builtin,
+    Blank,
+    Ready(Reading),
+    Loading,
+    Missing,
+    Unreadable,
+}
+
+/// One slot's audio and waveform peaks, keyed by what the slot holds so it
+/// is only recomputed when that changes.
+pub(crate) struct SlotAudio {
+    key: (SlotKind, u64),
+    pub(crate) audio: Option<Arc<LoadedBreak>>,
+    pub(crate) peaks: [f32; 512],
+}
+
+impl SlotAudio {
+    pub(crate) fn new(key: (SlotKind, u64), audio: Option<Arc<LoadedBreak>>) -> Self {
+        let peaks = audio.as_deref().map_or([0.0; 512], |a| peaks(&a.sample));
+        Self { key, audio, peaks }
+    }
+
+    pub(crate) fn builtin(slot: usize) -> Self {
+        Self::new(
+            (SlotKind::Builtin, 0),
+            Some(Library::builtin()[slot].clone()),
+        )
+    }
+
+    /// The audio, if there is any to draw or measure.
+    pub(crate) fn sample(&self) -> Option<&StereoSample> {
+        self.audio
+            .as_deref()
+            .map(|a| &a.sample)
+            .filter(|s| !s.frames.is_empty() && s.sample_rate > 0)
+    }
+}
+
+/// The loudest sample in each of 512 equal bins.
+fn peaks(sample: &StereoSample) -> [f32; 512] {
+    let len = sample.frames.len();
+    std::array::from_fn(|bin| {
+        if len == 0 {
+            return 0.0;
+        }
+        let start = bin * len / 512;
+        let end = ((bin + 1) * len / 512).max(start + 1).min(len);
+        sample.frames[start..end]
+            .iter()
+            .map(|frame| frame[0].abs().max(frame[1].abs()))
+            .fold(0.0_f32, f32::max)
+    })
+}
+
+/// The last component of `path`, for messages and tooltips.
+pub(crate) fn file_name(path: &str) -> &str {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(path)
+}
+
+/// Commits a finished load into `state`, or explains why it can't. Every
+/// failure leaves `state` exactly as it was.
+pub(crate) fn apply_result(
+    state: &mut EditState,
+    slot: usize,
+    path: &str,
+    mode: LoadMode,
+    outcome: &LoadOutcome,
+) -> Result<Reading, &'static str> {
+    let audio = match outcome {
+        LoadOutcome::Loaded(audio) => audio,
+        LoadOutcome::Refused(refusal) => return Err(refusal.message()),
+        // A chosen file that vanished before it loaded reads the same.
+        LoadOutcome::Unreadable | LoadOutcome::Missing => return Err(UNREADABLE),
+    };
+    let frames = u32::try_from(audio.sample.frames.len())
+        .ok()
+        .filter(|&frames| frames > 0)
+        .ok_or(UNREADABLE)?;
+    let markers = &audio.suggested[..LOAD_SLICES];
+    if markers.iter().any(|m| m.start >= m.end || m.end > frames) {
+        return Err(UNREADABLE);
+    }
+    let reading = audio.reading;
+    let result = match mode {
+        LoadMode::Load => state.load_user(slot, path, frames, reading.beats, markers),
+        LoadMode::Relink => state.relink(slot, path, frames, reading.beats),
+        LoadMode::FirstRun => state
+            .load_user(slot, path, frames, reading.beats, markers)
+            .map(|()| {
+                for other in (0..state.slots.len()).filter(|&other| other != slot) {
+                    state.unload(other);
+                }
+            }),
+    };
+    result.map_err(|e: SlotError| e.message())?;
+    Ok(reading)
+}
+
+impl JunglizerUi {
+    fn library(&self) -> Option<&Library> {
+        self.params.as_deref().map(|p| &p.library)
+    }
+
+    pub(crate) fn breaks_editable(&self) -> bool {
+        !self.state.get().frozen && !self.state.get().live_enabled
+    }
+
+    /// Picks up audio for any slot whose contents changed, or whose user
+    /// file has finished loading since the last frame.
+    pub(crate) fn refresh_slot_audio(&mut self) {
+        for slot in 0..self.slot_audio.len() {
+            let entry = self.state.get().slots[slot];
+            let key = (entry.kind, entry.path_hash());
+            let cached = &self.slot_audio[slot];
+            if cached.key == key && (entry.kind != SlotKind::User || cached.audio.is_some()) {
+                continue;
+            }
+            let audio = match entry.kind {
+                SlotKind::Builtin => Some(Library::builtin()[slot].clone()),
+                SlotKind::User => self.library().and_then(|l| l.audio_for(slot, key.1)),
+                SlotKind::Blank => None,
+            };
+            self.slot_audio[slot] = SlotAudio::new(key, audio);
+        }
+    }
+
+    pub(crate) fn slot_status(&self, slot: usize) -> SlotStatus {
+        let entry = self.state.get().slots[slot];
+        match entry.kind {
+            SlotKind::Builtin => SlotStatus::Builtin,
+            SlotKind::Blank => SlotStatus::Blank,
+            SlotKind::User => {
+                if let Some(sample) = self.slot_audio[slot].sample() {
+                    return SlotStatus::Ready(tempo::reading_for(
+                        entry.beats,
+                        sample.duration_secs(),
+                    ));
+                }
+                let restored = self
+                    .library()
+                    .and_then(|l| l.result(slot, Purpose::Restore))
+                    .filter(|r| r.path_hash == entry.path_hash());
+                match restored.map(|r| r.outcome) {
+                    Some(LoadOutcome::Missing) => SlotStatus::Missing,
+                    Some(LoadOutcome::Unreadable | LoadOutcome::Refused(_)) => {
+                        SlotStatus::Unreadable
+                    }
+                    _ => SlotStatus::Loading,
+                }
+            }
+        }
+    }
+
+    /// Whether a bar can sound from `slot`'s own audio.
+    pub(crate) fn playable(&self, slot: usize) -> bool {
+        let entry = self.state.get().slots[slot];
+        entry.kind != SlotKind::Blank
+            && (entry.kind == SlotKind::Builtin || entry.beats > 0)
+            && self.slot_audio[slot].sample().is_some()
+    }
+
+    /// The slot a bar's ghost plays, as the engine picks it: the bar's own
+    /// slot if it can sound, otherwise the lowest one that can.
+    pub(crate) fn ghost_slot(&self, slot: usize) -> Option<usize> {
+        if self.playable(slot) {
+            return Some(slot);
+        }
+        (0..self.slot_audio.len()).find(|&s| self.playable(s))
+    }
+
+    /// Beats in a slot's break; built-in bars are 4.
+    pub(crate) fn slot_beats(&self, slot: usize) -> u8 {
+        let entry = self.state.get().slots[slot];
+        match entry.kind {
+            SlotKind::User if entry.beats > 0 => entry.beats,
+            _ => 4,
+        }
+    }
+
+    /// Opens the file dialog and asks the library to load the chosen file.
+    pub(crate) fn choose_file(&mut self, slot: usize, mode: LoadMode) {
+        if !self.breaks_editable() {
+            self.message = LOCKED_HINT.into();
+            return;
+        }
+        let Some(picked) = rfd::FileDialog::new()
+            .add_filter("Audio", &["wav", "aif", "aiff", "mp3"])
+            .pick_file()
+        else {
+            return;
+        };
+        let Some(path) = picked.to_str() else {
+            self.message = UNREADABLE.into();
+            return;
+        };
+        if path.len() > MAX_PATH_BYTES {
+            self.message = SlotError::PathTooLong.message().into();
+            return;
+        }
+        self.pending = PendingLoad::Choosing {
+            slot,
+            seq: 0,
+            path: path.to_owned(),
+            mode,
+        };
+        self.post_pending();
+    }
+
+    /// Sends the pending request if the library hasn't taken it yet.
+    fn post_pending(&mut self) {
+        let library = self.params.as_deref().map(|p| &p.library);
+        if let (
+            PendingLoad::Choosing {
+                slot,
+                seq: seq @ 0,
+                path,
+                ..
+            },
+            Some(library),
+        ) = (&mut self.pending, library)
+            && let Some(posted) = library.request(*slot, path.as_bytes(), Purpose::Choose)
+        {
+            *seq = posted;
+        }
+    }
+
+    /// Frees audio the DSP let go of, and commits the pending load once
+    /// the loader has finished it.
+    pub(crate) fn poll_pending_load(&mut self, ctx: &egui::Context) {
+        let Some(library) = self.library() else {
+            return;
+        };
+        library.collect_garbage();
+        self.post_pending();
+        let (slot, seq, mode) = match &self.pending {
+            PendingLoad::None => return,
+            PendingLoad::Choosing {
+                slot, seq, mode, ..
+            } => (*slot, *seq, *mode),
+        };
+        let result = (seq != 0)
+            .then(|| self.library().and_then(|l| l.result(slot, Purpose::Choose)))
+            .flatten();
+        match result {
+            Some(result) if result.seq == seq => {
+                let PendingLoad::Choosing { path, .. } =
+                    std::mem::replace(&mut self.pending, PendingLoad::None)
+                else {
+                    return;
+                };
+                self.commit_load(slot, &path, mode, &result.outcome);
+            }
+            // A newer request replaced this one.
+            Some(result) if result.seq > seq => self.pending = PendingLoad::None,
+            _ => ctx.request_repaint_after(Duration::from_millis(50)),
+        }
+    }
+
+    fn commit_load(&mut self, slot: usize, path: &str, mode: LoadMode, outcome: &LoadOutcome) {
+        if !self.breaks_editable() {
+            self.message = LOCKED_HINT.into();
+            return;
+        }
+        // Work on a copy so a failure never reaches the DSP.
+        let mut next = self.state.get().clone();
+        match apply_result(&mut next, slot, path, mode, outcome) {
+            Ok(reading) => {
+                self.state.update(|state| *state = next);
+                self.refresh_slot_audio();
+                self.select_after_load = Some(slot);
+                self.message = format!(
+                    "Loaded {}: {}. Use ½ or ×2 if the tempo is off.",
+                    file_name(path),
+                    reading.label()
+                )
+                .into();
+            }
+            Err(message) => self.message = message.into(),
+        }
+    }
+
+    /// Selects `slot` for editing and keeps Source slices in step with it.
+    /// Automates the break before the count, so the DSP never applies one
+    /// slot's count to the previously selected slot.
+    pub(crate) fn select_break(&mut self, slot: usize, context: &PluginContext<JunglizerParams>) {
+        self.selected_loop = slot;
+        self.selected_slice = 0;
+        context.automate(P::EditBreak, slot as f64 / 3.0);
+        context.automate(P::EditSlice, 0.0);
+        let count = self.state.get().slice_count(slot).max(1);
+        context.automate(P::SourceSlices, f64::from(count - 1) / 31.0);
+    }
+
+    /// The Break 1–4 buttons. A blank slot reads “Empty” and opens the file
+    /// dialog.
+    pub(crate) fn slot_row(&mut self, ui: &mut Ui, context: &PluginContext<JunglizerParams>) {
+        if let Some(slot) = self.select_after_load.take() {
+            self.select_break(slot, context);
+        }
+        let editable = self.breaks_editable();
+        for (i, color) in SOURCE_COLORS.iter().enumerate() {
+            let blank = self.state.get().slots[i].kind == SlotKind::Blank;
+            let text = if blank {
+                egui::RichText::new("Empty").color(MUTED)
+            } else {
+                egui::RichText::new(format!("Break {}", i + 1)).color(*color)
+            };
+            let button = egui::Button::new(text).selected(self.selected_loop == i);
+            let response = if blank {
+                ui.add_enabled(editable, button)
+                    .on_hover_text(format!(
+                        "Break {} is empty. Click to choose a WAV, AIFF or MP3.",
+                        i + 1
+                    ))
+                    .on_disabled_hover_text(LOCKED_HINT)
+            } else {
+                ui.add(button)
+            };
+            if response.clicked() {
+                self.select_break(i, context);
+                if blank {
+                    self.choose_file(i, LoadMode::Load);
+                }
+            }
+        }
+    }
+
+    /// The selected slot's reading and its controls. Call inside a
+    /// right-to-left layout: items are added from the right edge.
+    pub(crate) fn slot_controls(&mut self, ui: &mut Ui) {
+        let slot = self.selected_loop;
+        let editable = self.breaks_editable();
+        let status = self.slot_status(slot);
+        if status == SlotStatus::Blank {
+            return;
+        }
+        if ui
+            .add_enabled(editable, egui::Button::new("Unload"))
+            .on_disabled_hover_text(LOCKED_HINT)
+            .clicked()
+        {
+            self.confirm_unload = Some(slot);
+            self.unload_modal_fresh = true;
+        }
+        let path = self.state.get().slots[slot]
+            .path()
+            .unwrap_or_default()
+            .to_owned();
+        match status {
+            SlotStatus::Builtin => {
+                ui.colored_label(MUTED, Library::builtin()[slot].reading.label());
+            }
+            SlotStatus::Ready(reading) => {
+                for (label, next) in [
+                    ("×2", tempo::doubled(reading)),
+                    ("½", tempo::halved(reading)),
+                ] {
+                    if ui
+                        .add_enabled(editable && next.is_some(), egui::Button::new(label))
+                        .on_disabled_hover_text(if editable {
+                            "That would leave 4 to 32 beats or 80–195 BPM."
+                        } else {
+                            LOCKED_HINT
+                        })
+                        .clicked()
+                        && let Some(next) = next
+                    {
+                        self.state.update(|s| {
+                            s.set_beats(slot, next.beats);
+                        });
+                    }
+                }
+                ui.colored_label(MUTED, reading.label())
+                    .on_hover_text(file_name(&path));
+            }
+            SlotStatus::Loading => {
+                ui.colored_label(MUTED, "Loading…")
+                    .on_hover_text(file_name(&path));
+            }
+            SlotStatus::Missing | SlotStatus::Unreadable => {
+                if ui
+                    .add_enabled(editable, egui::Button::new("Relink…"))
+                    .on_disabled_hover_text(LOCKED_HINT)
+                    .clicked()
+                {
+                    self.choose_file(slot, LoadMode::Relink);
+                }
+                let label = if status == SlotStatus::Missing {
+                    "Missing"
+                } else {
+                    "Unreadable"
+                };
+                ui.colored_label(MUTED, label).on_hover_text(path);
+            }
+            SlotStatus::Blank => {}
+        }
+    }
+
+    /// The message drawn in the source waveform when there's no audio to
+    /// show, or `None` when there is.
+    pub(crate) fn waveform_notice(&self, slot: usize) -> Option<String> {
+        let path = self.state.get().slots[slot].path().unwrap_or_default();
+        match self.slot_status(slot) {
+            SlotStatus::Blank => {
+                Some("This slot is empty. Click Empty to choose a WAV, AIFF or MP3.".into())
+            }
+            SlotStatus::Loading => Some(format!("Loading {}…", file_name(path))),
+            SlotStatus::Missing => Some(format!(
+                "Can’t find {}. Use Relink… to find it.",
+                file_name(path)
+            )),
+            SlotStatus::Unreadable => Some(format!(
+                "Junglizer couldn’t read {}. Use Relink… to choose it again.",
+                file_name(path)
+            )),
+            SlotStatus::Builtin | SlotStatus::Ready(_) => None,
+        }
+    }
+
+    /// Faint beat lines and stronger bar lines every 4 beats.
+    pub(crate) fn beat_grid(&self, painter: &egui::Painter, rect: egui::Rect, slot: usize) {
+        let beats = self.slot_beats(slot);
+        for beat in 1..beats {
+            let x = rect.left() + rect.width() * f32::from(beat) / f32::from(beats);
+            let color = if beat % 4 == 0 {
+                EDGE
+            } else {
+                EDGE.gamma_multiply(0.5)
+            };
+            painter.line_segment(
+                [
+                    egui::Pos2::new(x, rect.top()),
+                    egui::Pos2::new(x, rect.bottom()),
+                ],
+                egui::Stroke::new(1.0_f32, color),
+            );
+        }
+    }
+
+    /// Asks before unloading a break.
+    pub(crate) fn unload_modal(&mut self, ctx: &egui::Context) {
+        let Some(slot) = self.confirm_unload else {
+            return;
+        };
+        if std::mem::take(&mut self.unload_modal_fresh) {
+            // A new area is invisible while it measures itself; redo the
+            // pass so the dialog shows on the first frame.
+            ctx.request_discard("unload dialog first frame");
+        }
+        let id = egui::Id::new("unload-break");
+        // No fade: the dialog is there on the frame it opens.
+        let modal = egui::Modal::new(id).area(egui::Modal::default_area(id).fade_in(false));
+        let response = modal.show(ctx, |ui| {
+            apply_style(ui);
+            ui.set_max_width(330.0);
+            ui.label(
+                "Unload this break? Its slices and placements in this project will be removed.",
+            );
+            ui.add_space(10.0);
+            let mut choice = None;
+            ui.horizontal(|ui| {
+                if ui.button("Unload").clicked() {
+                    choice = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    choice = Some(false);
+                }
+            });
+            choice
+        });
+        match response.inner {
+            Some(true) => {
+                self.confirm_unload = None;
+                if !self.breaks_editable() {
+                    self.message = LOCKED_HINT.into();
+                    return;
+                }
+                let mut unloaded = false;
+                self.state.update(|s| unloaded = s.unload(slot));
+                if unloaded {
+                    self.refresh_slot_audio();
+                    self.message = format!("Break {} unloaded.", slot + 1).into();
+                }
+            }
+            Some(false) => self.confirm_unload = None,
+            None if response.should_close() => self.confirm_unload = None,
+            None => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::edit_state::SlotKind;
+    use crate::library::LoadedBreak;
+    use crate::sample::StereoSample;
+    use crate::tempo::{self, Refusal};
+    use std::sync::Arc;
+
+    #[test]
+    fn a_refused_choice_leaves_the_slot_unchanged() {
+        let mut s = EditState::default();
+        let before = s.clone();
+        apply_result(
+            &mut s,
+            0,
+            "/x/long.wav",
+            LoadMode::Load,
+            &LoadOutcome::Refused(Refusal::TooLong),
+        )
+        .unwrap_err();
+        assert_eq!(s, before);
+    }
+
+    #[test]
+    fn first_run_choice_loads_slot_one_and_clears_the_others() {
+        let mut s = EditState::default();
+        let b = Arc::new(LoadedBreak::new(
+            StereoSample {
+                frames: vec![[0.1; 2]; 60_828],
+                sample_rate: 44_100,
+            },
+            7,
+            tempo::reading_for(4, 60_828.0 / 44_100.0),
+        ));
+        apply_result(
+            &mut s,
+            0,
+            "/x/my 174.wav",
+            LoadMode::FirstRun,
+            &LoadOutcome::Loaded(b),
+        )
+        .unwrap();
+        assert_eq!(
+            s.slots.map(|x| x.kind),
+            [
+                SlotKind::User,
+                SlotKind::Blank,
+                SlotKind::Blank,
+                SlotKind::Blank
+            ]
+        );
+    }
+
+    fn loaded(frames: usize, beats: u8) -> LoadOutcome {
+        // Real drums, so the suggested slices are active.
+        let amen = &Library::builtin()[0].sample.frames;
+        let sample = StereoSample {
+            frames: amen.iter().copied().cycle().take(frames).collect(),
+            sample_rate: 44_100,
+        };
+        let secs = frames as f64 / 44_100.0;
+        LoadOutcome::Loaded(Arc::new(LoadedBreak::new(
+            sample,
+            7,
+            tempo::reading_for(beats, secs),
+        )))
+    }
+
+    #[test]
+    fn a_loaded_choice_links_the_file_with_eight_slices() {
+        let mut s = EditState::default();
+        let reading =
+            apply_result(&mut s, 2, "/x/b.wav", LoadMode::Load, &loaded(243_312, 16)).unwrap();
+        assert_eq!(reading.beats, 16);
+        let slot = s.slots[2];
+        assert_eq!(
+            (slot.kind, slot.beats, slot.frames, slot.slice_count),
+            (SlotKind::User, 16, 243_312, 8)
+        );
+        assert_eq!(slot.path(), Some("/x/b.wav"));
+        assert!(s.marker_set(2).is_some_and(|set| set.valid));
+        assert_eq!(s.slots[0].kind, SlotKind::Builtin);
+    }
+
+    #[test]
+    fn unreadable_missing_and_empty_audio_leave_the_state_unchanged() {
+        let mut s = EditState::default();
+        let before = s.clone();
+        for outcome in [LoadOutcome::Unreadable, LoadOutcome::Missing, loaded(0, 4)] {
+            let message =
+                apply_result(&mut s, 0, "/x/a.wav", LoadMode::Load, &outcome).unwrap_err();
+            assert_eq!(message, UNREADABLE);
+            assert_eq!(s, before);
+        }
+    }
+
+    #[test]
+    fn a_slot_error_is_reported_and_changes_nothing() {
+        let mut s = EditState::default();
+        let before = s.clone();
+        // Relink only applies to a user slot.
+        let message =
+            apply_result(&mut s, 1, "/x/a.wav", LoadMode::Relink, &loaded(60_828, 4)).unwrap_err();
+        assert_eq!(message, SlotError::BadSlot.message());
+        assert_eq!(s, before);
+    }
+
+    #[test]
+    fn relink_keeps_placements_and_takes_the_new_reading() {
+        let mut s = EditState::default();
+        apply_result(&mut s, 0, "/old/a.wav", LoadMode::Load, &loaded(60_828, 4)).unwrap();
+        let slice = s.slice(0, 1).unwrap();
+        assert!(s.place(crate::edit_state::StepPlacement {
+            active: true,
+            start_slot: 0,
+            span_slots: 1,
+            source_loop: 0,
+            source_slice: 1,
+            mode: 0,
+            bit_depth: 16,
+            repeats: 1,
+            locked: false,
+        }));
+        apply_result(
+            &mut s,
+            0,
+            "/new/a.wav",
+            LoadMode::Relink,
+            &loaded(121_656, 8),
+        )
+        .unwrap();
+        assert_eq!(s.slots[0].path(), Some("/new/a.wav"));
+        assert_eq!((s.slots[0].beats, s.slots[0].frames), (8, 121_656));
+        assert!(s.placements.iter().any(|p| p.active && p.source_slice == 1));
+        assert!(s.slice(0, 1).unwrap().start >= slice.start);
+    }
+
+    #[test]
+    fn file_name_is_the_last_component() {
+        assert_eq!(file_name("/Users/me/Breaks/think 174.wav"), "think 174.wav");
+        assert_eq!(file_name("loop.aif"), "loop.aif");
+    }
+}
