@@ -47,6 +47,8 @@ pub struct JunglizerUi {
     select_after_load: Option<usize>,
     confirm_unload: Option<usize>,
     unload_modal_fresh: bool,
+    /// The frame the confirm dialog opened on; Return waits a frame.
+    modal_opened_frame: Option<u64>,
     /// A dropped file waiting on the unload dialog to replace a user break.
     replace_with: Option<PathBuf>,
     /// The empty state's amen link is waiting on the confirm dialog.
@@ -102,6 +104,7 @@ impl JunglizerUi {
             select_after_load: None,
             confirm_unload: None,
             unload_modal_fresh: false,
+            modal_opened_frame: None,
             replace_with: None,
             confirm_amen: false,
             drop_targets: Vec::new(),
@@ -159,7 +162,7 @@ impl JunglizerUi {
 
     fn place(&mut self, slot: u8, context: &PluginContext<JunglizerParams>) {
         if self.state.get().frozen || self.state.get().live_enabled {
-            self.message = "Unfreeze or turn off live variations before editing the player.".into();
+            self.message = "Choose Edit under Phrase before editing the player.".into();
             return;
         }
         let (source_loop, source_slice) = self
@@ -463,9 +466,7 @@ impl JunglizerUi {
                 .response;
             // The dimmed player behind the break target has its own reason.
             if locked {
-                combo.on_disabled_hover_text(
-                    "Unfreeze or stop live variations to change ghost breaks.",
-                );
+                combo.on_disabled_hover_text("Choose Edit under Phrase to change ghost breaks.");
             }
             if active {
                 child.colored_label(ACCENT, "Now");
@@ -475,9 +476,7 @@ impl JunglizerUi {
                 let lock = ui
                     .add_enabled(!locked, egui::Button::new("").min_size(vec2(26.0, 22.0)))
                     .on_hover_text(format!("Lock bar {}’s slices", bar + 1))
-                    .on_disabled_hover_text(
-                        "Unfreeze or stop live variations before locking a bar.",
-                    );
+                    .on_disabled_hover_text("Choose Edit under Phrase to lock a bar.");
                 padlock(
                     ui.painter(),
                     lock.rect.center() - vec2(4.0, 1.0),
@@ -489,9 +488,7 @@ impl JunglizerUi {
                 if ui
                     .add_enabled(!locked, egui::Button::new("Fill"))
                     .on_hover_text(format!("Suggest a fill for bar {}", bar + 1))
-                    .on_disabled_hover_text(
-                        "Unfreeze or stop live variations before suggesting a fill.",
-                    )
+                    .on_disabled_hover_text("Choose Edit under Phrase to suggest a fill.")
                     .clicked()
                 {
                     self.fill_bar(bar, context);
@@ -666,6 +663,9 @@ impl JunglizerUi {
         if response.has_focus() {
             ui.painter()
                 .rect_stroke(rect, 0.0, Stroke::new(2.0_f32, ACCENT), StrokeKind::Inside);
+        }
+        // An open dialog owns the keyboard: its Return mustn't place a slice.
+        if response.has_focus() && !self.confirm_open() {
             let direction = ui.input(|input| {
                 i16::from(input.key_pressed(egui::Key::ArrowRight))
                     - i16::from(input.key_pressed(egui::Key::ArrowLeft))
@@ -1203,8 +1203,10 @@ impl EditorUi<JunglizerParams> for JunglizerUi {
         self.poll_pending_load(ui.ctx());
         self.refresh_slot_audio();
         self.prune_undo();
-        // Cmd+Z on macOS, Ctrl+Z elsewhere; a field being typed in keeps it.
-        if !ui.ctx().egui_wants_keyboard_input()
+        // Cmd+Z on macOS, Ctrl+Z elsewhere; a field being typed in keeps
+        // it, and an open dialog blocks it.
+        if !self.confirm_open()
+            && !text_field_focused(ui.ctx())
             && ui
                 .input(|i| i.modifiers.command && !i.modifiers.shift && i.key_pressed(egui::Key::Z))
         {
@@ -1449,8 +1451,9 @@ fn tone_crossfader(ui: &mut Ui, context: &PluginContext<JunglizerParams>) {
             ACCENT,
         );
     }
-    // Crossing Dry, in either direction, kicks the marks out to 6 px; they
-    // ease back to 3 px over 150 ms. Nothing animates at rest.
+    // Crossing Dry, Thin to Thicc or back, kicks the marks out to 6 px;
+    // they ease back to 3 px over 150 ms. Leaving or landing on exact Dry
+    // isn't a crossing. Nothing animates at rest.
     let sign = if amount > 0.0 {
         1_i8
     } else if amount < 0.0 {
@@ -1460,11 +1463,12 @@ fn tone_crossfader(ui: &mut Ui, context: &PluginContext<JunglizerParams>) {
     };
     let now = ui.input(|i| i.time);
     let id = egui::Id::new("thin-thicc-detent");
-    let (last, crossed) = ui
+    let (side, crossed) = ui
         .memory(|m| m.data.get_temp::<(i8, f64)>(id))
         .unwrap_or((sign, f64::NEG_INFINITY));
-    let crossed = if last != sign { now } else { crossed };
-    ui.memory_mut(|m| m.data.insert_temp(id, (sign, crossed)));
+    let (did_cross, side) = detent_crossing(side, sign);
+    let crossed = if did_cross { now } else { crossed };
+    ui.memory_mut(|m| m.data.insert_temp(id, (side, crossed)));
     let t = ((now - crossed) / 0.15) as f32;
     let tick = if (0.0..1.0).contains(&t) {
         ui.ctx().request_repaint();
@@ -1514,6 +1518,14 @@ fn tone_crossfader(ui: &mut Ui, context: &PluginContext<JunglizerParams>) {
         );
     }
     dymo_label(ui.painter(), labels.right(), labels.top(), "Thicc", font);
+}
+
+/// Whether the fader crossed Dry: `side` is the last side it was on (−1
+/// Thin, +1 Thicc, 0 not yet off Dry) and `sign` is its side now (0 at
+/// exact Dry). Returns the crossing and the side to remember.
+fn detent_crossing(side: i8, sign: i8) -> (bool, i8) {
+    let crossed = sign != 0 && side != 0 && sign != side;
+    (crossed, if sign == 0 { side } else { sign })
 }
 
 /// Embossed label tape, Dymo style: a dark plastic strip with a little
@@ -1759,7 +1771,7 @@ impl JunglizerUi {
             ui.label("Source slices");
             if ui
                 .add_enabled(editable, egui::DragValue::new(&mut count).range(1..=32))
-                .on_disabled_hover_text("Unfreeze or stop live variations to edit source slices.")
+                .on_disabled_hover_text("Choose Edit under Phrase to edit source slices.")
                 .changed()
             {
                 self.ensure_markers(self.selected_loop, count);
@@ -1974,7 +1986,7 @@ impl JunglizerUi {
             ui.label(egui::RichText::new("Player").size(19.0).strong());
             ui.label("Player slots");
             let mut slots = self.state.get().player_slots;
-            if ui.add_enabled(!self.state.get().frozen && !self.state.get().live_enabled, egui::DragValue::new(&mut slots).range(1..=32)).on_disabled_hover_text("Unfreeze or stop live variations to change the player grid.").changed() {
+            if ui.add_enabled(!self.state.get().frozen && !self.state.get().live_enabled, egui::DragValue::new(&mut slots).range(1..=32)).on_disabled_hover_text("Choose Edit under Phrase to change the player grid.").changed() {
                 self.state.update(|state| { state.set_player_slots(slots); }); context.automate(P::PlayerSlots, f64::from(slots - 1) / 31.0);
             }
             ui.colored_label(MUTED, "16 beats");
@@ -1997,6 +2009,62 @@ impl JunglizerUi {
                 ui.colored_label(MUTED, "Ghost in empty slots  / ");
             });
         });
+    }
+
+    /// Acts on a Mode choice: 0 Edit (stops Live or unfreezes, keeping
+    /// slice locks), 1 Live, 2 Frozen (holds what's playing, freezing a
+    /// live variation). Choosing the current mode does nothing.
+    fn choose_mode(&mut self, choice: u8, context: &PluginContext<JunglizerParams>) {
+        let frozen = self.state.get().frozen;
+        let live_on = self.state.get().live_enabled;
+        match choice {
+            0 if frozen => {
+                self.state.update(|s| {
+                    s.frozen = false;
+                    s.touch();
+                });
+                context.automate(P::LiveVariations, 0.0);
+                self.message = "Phrase unfrozen. Individual slice locks are preserved.".into();
+            }
+            0 if live_on => {
+                self.state.update(|s| {
+                    s.live_enabled = false;
+                    s.touch();
+                });
+                context.automate(P::LiveVariations, 0.0);
+                self.message = "Live stopped. Your hand-edited pattern is back.".into();
+            }
+            1 if !live_on && !frozen => {
+                self.state.update(|s| {
+                    s.live_enabled = true;
+                    s.touch();
+                });
+                context.automate(P::LiveVariations, 1.0);
+                self.message =
+                    "Live variations on. Choose Frozen to keep the phrase you hear.".into();
+            }
+            2 if !frozen => {
+                if live_on {
+                    self.freeze_live(context);
+                } else {
+                    let bars = [
+                        context.params().bar_1.value(),
+                        context.params().bar_2.value(),
+                        context.params().bar_3.value(),
+                        context.params().bar_4.value(),
+                    ]
+                    .map(|v| (v - 1) as u8);
+                    self.state.update(|s| {
+                        s.freeze_phrase(s.placements, s.slice_counts(), s.player_slots, bars)
+                    });
+                    context.automate(P::LiveVariations, 0.0);
+                    self.message =
+                        "Phrase frozen. Choose Edit to change it; slice locks are unchanged."
+                            .into();
+                }
+            }
+            _ => {}
+        }
     }
 
     fn actions(
@@ -2041,53 +2109,8 @@ impl JunglizerUi {
                     "Hold what’s playing, live variation included, so it repeats exactly.",
                 ]),
             );
-            match choice {
-                Some(0) if frozen => {
-                    self.state.update(|s| {
-                        s.frozen = false;
-                        s.touch();
-                    });
-                    context.automate(P::LiveVariations, 0.0);
-                    self.message = "Phrase unfrozen. Individual slice locks are preserved.".into();
-                }
-                Some(0) if live_on => {
-                    self.state.update(|s| {
-                        s.live_enabled = false;
-                        s.touch();
-                    });
-                    context.automate(P::LiveVariations, 0.0);
-                    self.message = "Live stopped. Your hand-edited pattern is back.".into();
-                }
-                Some(1) if !live_on && !frozen => {
-                    self.state.update(|s| {
-                        s.live_enabled = true;
-                        s.touch();
-                    });
-                    context.automate(P::LiveVariations, 1.0);
-                    self.message =
-                        "Live variations on. Choose Frozen to keep the phrase you hear.".into();
-                }
-                Some(2) if !frozen => {
-                    if live_on {
-                        self.freeze_live(context);
-                    } else {
-                        let bars = [
-                            context.params().bar_1.value(),
-                            context.params().bar_2.value(),
-                            context.params().bar_3.value(),
-                            context.params().bar_4.value(),
-                        ]
-                        .map(|v| (v - 1) as u8);
-                        self.state.update(|s| {
-                            s.freeze_phrase(s.placements, s.slice_counts(), s.player_slots, bars)
-                        });
-                        context.automate(P::LiveVariations, 0.0);
-                        self.message =
-                            "Phrase frozen. Choose Edit to change it; slice locks are unchanged."
-                                .into();
-                    }
-                }
-                _ => {}
+            if let Some(choice) = choice {
+                self.choose_mode(choice, context);
             }
         });
         ui.horizontal(|ui| {
@@ -2134,6 +2157,14 @@ const PHRASE_LABEL: f32 = 62.0;
 const CHOICE_WIDTH: f32 = 188.0;
 /// The widest stepper value, which sets every stepper's value field.
 const STEPPER_WIDEST: &str = "32 slots";
+
+/// A text field (including a DragValue being typed into) has keyboard
+/// focus, so Cmd/Ctrl+Z belongs to it. Focus on any other widget, such as
+/// the player, leaves Undo to the editor.
+fn text_field_focused(ctx: &egui::Context) -> bool {
+    ctx.memory(|m| m.focused())
+        .is_some_and(|id| egui::TextEdit::load_state(ctx, id).is_some())
+}
 
 /// A fixed-width field label, so rows of controls line up.
 fn field_label(ui: &mut Ui, text: &str, width: f32) {

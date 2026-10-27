@@ -454,7 +454,7 @@ fn frozen_and_live_players_reject_new_placements() {
         let before = ui.state.get().placements;
         ui.place(20, &ctx);
         assert_eq!(before, ui.state.get().placements);
-        assert!(ui.message.contains("Unfreeze"));
+        assert!(ui.message.contains("Choose Edit"));
     }
 }
 
@@ -698,4 +698,187 @@ fn a_stale_state_snapshot_hides_the_undo_without_dropping_it() {
     ui.prune_undo();
     ui.state.update(|s| *s = filled.clone());
     assert_eq!(ui.undo_label(), None);
+}
+
+/// Drives the whole editor through egui frames at the default size.
+struct Driver {
+    egui: egui::Context,
+    editor: JunglizerUi,
+    ctx: PluginContext<JunglizerParams>,
+    time: f64,
+}
+
+impl Driver {
+    fn new(name: &str) -> Self {
+        let (editor, _, ctx) = fixture(name);
+        let mut driver = Self {
+            egui: egui::Context::default(),
+            editor,
+            ctx,
+            time: 0.0,
+        };
+        driver.frame(Vec::new(), egui::Modifiers::NONE);
+        driver
+    }
+
+    fn frame(&mut self, events: Vec<egui::Event>, modifiers: egui::Modifiers) {
+        self.time += 0.1;
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1100.0, 720.0))),
+            time: Some(self.time),
+            modifiers,
+            events,
+            ..Default::default()
+        };
+        let (editor, ctx) = (&mut self.editor, &self.ctx);
+        let _ = self.egui.run_ui(input, |ui| editor.ui(ui, ctx));
+    }
+
+    /// A click at `at`, over two frames.
+    fn click(&mut self, at: Pos2) {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        self.frame(
+            vec![egui::Event::PointerMoved(at), button(true)],
+            egui::Modifiers::NONE,
+        );
+        self.frame(vec![button(false)], egui::Modifiers::NONE);
+    }
+
+    fn key(&mut self, key: egui::Key, modifiers: egui::Modifiers) {
+        self.frame(
+            vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            }],
+            modifiers,
+        );
+    }
+}
+
+/// The 2:03 placement in slot 6 of the fixture's player.
+const SLOT_SIX: Pos2 = Pos2::new(198.0, 430.0);
+
+#[test]
+fn return_in_an_open_dialog_never_places_a_slice_in_the_player() {
+    let mut d = Driver::new("selected");
+    d.click(SLOT_SIX);
+    assert_eq!(d.editor.selected_slot, Some(5), "the click selects slot 6");
+    let before = d.editor.state.get().clone();
+    // A dialog opens on a frame where the player still has focus and
+    // Enter arrives. The player runs before the dialog draws, so it must
+    // check for the dialog itself; neither may act on the Enter.
+    d.editor.confirm_unload = Some(1);
+    d.editor.unload_modal_fresh = true;
+    d.key(egui::Key::Enter, egui::Modifiers::NONE);
+    assert!(d.editor.confirm_open());
+    assert!(*d.editor.state.get() == before, "Enter changed the pattern");
+    // With the dialog gone (one frame for its backdrop to go), the same
+    // Enter places 3:04 in slot 6.
+    d.editor.close_unload_modal(false);
+    d.frame(Vec::new(), egui::Modifiers::NONE);
+    d.click(SLOT_SIX);
+    d.key(egui::Key::Enter, egui::Modifiers::NONE);
+    let placed = d.editor.state.get().placements;
+    assert!(
+        placed
+            .iter()
+            .any(|p| p.active && p.start_slot == 5 && p.source_loop == 2 && p.source_slice == 3),
+        "the control Enter didn't place"
+    );
+}
+
+#[test]
+fn cmd_z_undoes_after_a_click_has_focused_the_player() {
+    let mut d = Driver::new("selected");
+    let before = d.editor.state.get().placements;
+    d.editor.fill_bar(1, &d.ctx);
+    assert_ne!(before, d.editor.state.get().placements);
+    d.click(SLOT_SIX);
+    assert!(
+        d.egui.memory(|m| m.focused()).is_some(),
+        "the player has focus"
+    );
+    d.key(egui::Key::Z, egui::Modifiers::COMMAND);
+    assert_eq!(
+        before,
+        d.editor.state.get().placements,
+        "Cmd/Ctrl+Z didn't undo"
+    );
+}
+
+#[test]
+fn the_detent_ticks_only_when_the_fader_crosses_dry() {
+    // (crossed, side to remember)
+    assert_eq!(detent_crossing(-1, 1), (true, 1));
+    assert_eq!(detent_crossing(1, -1), (true, -1));
+    assert_eq!(detent_crossing(1, 1), (false, 1));
+    // Leaving or landing on exact Dry isn't a crossing.
+    assert_eq!(detent_crossing(0, 1), (false, 1));
+    assert_eq!(detent_crossing(1, 0), (false, 1));
+    // Thin, to Dry, to Thicc: the crossing lands on reaching Thicc.
+    assert_eq!(detent_crossing(-1, 0), (false, -1));
+    assert_eq!(detent_crossing(-1, 1), (true, 1));
+}
+
+#[test]
+fn edit_from_frozen_unfreezes_and_keeps_slice_locks() {
+    let (mut ui, params, ctx) = fixture("frozen-midi");
+    let placements = ui.state.get().placements;
+    ui.choose_mode(0, &ctx);
+    assert!(!ui.state.get().frozen);
+    assert_eq!(
+        placements,
+        ui.state.get().placements,
+        "locks and slices kept"
+    );
+    assert!(!params.live_variations.value());
+    assert_eq!(
+        ui.message,
+        "Phrase unfrozen. Individual slice locks are preserved."
+    );
+}
+
+#[test]
+fn edit_from_live_stops_live_and_restores_the_hand_edited_pattern() {
+    let (mut ui, params, ctx) = fixture("live-1");
+    params.set_normalized(P::LiveVariations.into(), 1.0);
+    let placements = ui.state.get().placements;
+    ui.choose_mode(0, &ctx);
+    assert!(!ui.state.get().live_enabled && !ui.state.get().frozen);
+    assert_eq!(placements, ui.state.get().placements);
+    assert!(!params.live_variations.value());
+    assert_eq!(
+        ui.message,
+        "Live stopped. Your hand-edited pattern is back."
+    );
+}
+
+#[test]
+fn frozen_from_live_freezes_the_live_variation_and_keeps_locks() {
+    let (mut ui, params, ctx) = fixture("live-1");
+    params.set_normalized(P::LiveVariations.into(), 1.0);
+    let captured = params.live_snapshot.capture().unwrap();
+    let hand_edited = ui.state.get().placements;
+    assert_ne!(captured.placements, hand_edited, "the variation differs");
+    ui.choose_mode(2, &ctx);
+    let state = ui.state.get();
+    assert!(state.frozen && !state.live_enabled);
+    assert_eq!(state.placements, captured.placements);
+    assert_eq!(state.frozen_bars, captured.bars);
+    assert!(
+        state
+            .placements
+            .iter()
+            .any(|p| p.active && p.locked && p.start_slot == 10),
+        "the locked 3:04 stays locked"
+    );
+    assert!(!params.live_variations.value());
 }
