@@ -365,7 +365,10 @@ impl Host {
 ///   component compared against an alias, is refused too: case-insensitive
 ///   APFS folds Unicode, so `/Networ\u{212A}` (KELVIN SIGN) is `/Network`.
 /// - Linux: `/net`, `/misc` and gvfs under `/run/user/<uid>` or
-///   `/var/run/user/<uid>`, matched exactly.
+///   `/var/run/user/<uid>`, matched exactly. Also `/proc` and `/dev/fd`,
+///   whose entries (`/proc/self/root`, `/dev/fd/3`) lead into other roots.
+/// - macOS also refuses those roots one level under any `/Volumes/<name>`,
+///   because the boot volume appears there as a symlink to `/`.
 fn is_automount(components: &[&[u8]], host: Host) -> bool {
     match host {
         Host::MacOs => {
@@ -390,18 +393,25 @@ fn is_automount(components: &[&[u8]], host: Host) -> bool {
                 Some(Some(true)) => parts = &parts[1..],
                 _ => {}
             }
-            parts.first().is_some_and(|first| {
+            let root = |part: &[u8]| {
                 ["net", "Network", "home"]
                     .iter()
-                    .any(|root| matches(first, root) != Some(false))
-            })
+                    .any(|root| matches(part, root) != Some(false))
+            };
+            match parts {
+                [first, ..] if root(first) => true,
+                // The boot volume is also a symlink at `/Volumes/<name>`.
+                [volumes, _, third, ..] if matches(volumes, "Volumes") == Some(true) => root(third),
+                _ => false,
+            }
         }
         Host::Linux => {
             let gvfs = |parts: &[&[u8]]| {
                 matches!(parts, [b"run", b"user", uid, b"gvfs", ..]
                     if !uid.is_empty() && uid.iter().all(u8::is_ascii_digit))
             };
-            matches!(components.first(), Some(&(b"net" | b"misc")))
+            matches!(components.first(), Some(&(b"net" | b"misc" | b"proc")))
+                || matches!(components, [b"dev", b"fd", ..])
                 || gvfs(components)
                 || components.first() == Some(&&b"var"[..]) && gvfs(&components[1..])
         }
@@ -599,7 +609,11 @@ fn load_unguarded(path: &[u8], hash: u64, seq: u64, restore: bool) -> LoadOutcom
     //   hang the loader on a dead host. The roots are matched on whole
     //   components of an absolute path with no empty component, and on
     //   macOS a non-ASCII first component is refused, since APFS folds
-    //   Unicode case (`/Networ\u{212A}` is `/Network`).
+    //   Unicode case (`/Networ\u{212A}` is `/Network`). The same roots
+    //   under `/Volumes/<name>` (the boot volume's symlink to `/`) are
+    //   refused on macOS, and `/proc` and `/dev/fd` on Linux. These are
+    //   the last lexical aliases. A symlink planted on a local disk needs
+    //   local write access already, so it is deliberately out of scope.
     // - Never a namespace path (`\\?\`, `//?/`, `\\.\`, `//./`, `\??\`).
     //   Win32 normalizes the forward forms, so `..` can walk a drive path
     //   into UNC or device space, e.g. `//?/C:/../../UNC/srv/share/x.wav`;
@@ -1262,6 +1276,55 @@ mod tests {
                     path.contains(':') || restore_allowed(path, Host::Windows),
                     "{path}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn restore_refuses_proc_dev_fd_and_boot_volume_aliases() {
+        let linux_refused = [
+            "/proc/self/root/net/x.wav",
+            "/proc",
+            "/dev/fd/3/x.wav",
+            "/dev/fd",
+        ];
+        let mac_refused = [
+            "/Volumes/Macintosh HD/net/x.wav",
+            "/Volumes/Macintosh HD/Network/Servers/x.wav",
+            "/volumes/Macintosh HD/HOME/todd/x.wav",
+            "/System/Volumes/Data/Volumes/Macintosh HD/net/x.wav",
+            "/Volumes/Macintosh HD/Networ\u{212A}/x.wav",
+        ];
+        for path in linux_refused {
+            assert!(!restore_allowed(path, Host::Linux), "{path}");
+            for host in [Host::MacOs, Host::Windows, Host::Other] {
+                assert!(restore_allowed(path, host), "{path} on {host:?}");
+            }
+        }
+        for path in mac_refused {
+            assert!(!restore_allowed(path, Host::MacOs), "{path}");
+            assert!(path_allowed(path), "Choose still takes {path}");
+            for host in [Host::Linux, Host::Windows, Host::Other] {
+                assert!(
+                    !path.is_ascii() || restore_allowed(path, host),
+                    "{path} on {host:?}"
+                );
+            }
+        }
+        // External sample drives and look-alikes stay allowed everywhere.
+        for allowed in [
+            "/Volumes/Samples/Breaks/x.wav",
+            "/Volumes/Samples/network-loops/x.wav",
+            "/Volumes/Samples/Breaks/net/x.wav",
+            "/Volumes/net.wav",
+            "/procedures/x.wav",
+            "/home2/proc/x.wav",
+            "/dev/fdx/x.wav",
+            "/devices/fd/x.wav",
+            "/Users/a/dev/fd/x.wav",
+        ] {
+            for host in HOSTS {
+                assert!(restore_allowed(allowed, host), "{allowed} on {host:?}");
             }
         }
     }
