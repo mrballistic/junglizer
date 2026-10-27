@@ -167,7 +167,8 @@ compatibility. Don't use aubio, which is GPL-3 and would force Junglizer's licen
 - **Loop test:** `tools/tempo/check_tempo_rule.py` runs this rule over folders of named loops
   (`--no-hint` for fastest fit only). Against 397 of Todd's loops: 378 read correctly, the 7
   loops longer than 32 beats are refused, 1 untrimmed vinyl rip is misread, and 11 have no BPM in
-  the name to check against.
+  the name to check against. The misread file is one of KAN's “Original”/“Vinyl” versions, which
+  are deliberately not loops (Todd), so it's not a miss the rule needs to handle.
 - **Refusal:** if no whole-bar count lands in 80–195 BPM, or the named tempo puts the file past
   32 beats, refuse the file with a short, specific message (too short, too long, or not a whole
   number of bars), and leave the slot unchanged.
