@@ -23,7 +23,7 @@ Linux is unaffected by this change: baseview has no drop support on X11, so thos
 1. Keep `hovered_files` and `dropped_files` on the handler.
 2. On `DragEntered` and `DragMoved`: move the pointer (as `CursorMoved` does, so egui knows where the drag is), record the hovered paths, and return `EventStatus::AcceptDrop(DropEffect::Copy)` when the data is `DropData::Files`. Anything else stays `Ignored`.
 3. On `DragLeft`: clear the hovered files and push `PointerGone`, which also triggers a repaint so the UI can clear any hover state.
-4. On `DragDropped`: move the pointer, move the paths into `dropped_files`, clear the hovered files, and accept the drop.
+4. On `DragDropped`: move the pointer and clear the hovered files. If the data is `DropData::Files`, move the paths into `dropped_files` and accept the drop; otherwise return `Ignored`.
 5. Pass both lists through `RawInput` each frame (`hovered_files` cloned, `dropped_files` taken), which is what egui-winit does.
 
 With the drag arms added the match is exhaustive, so the wildcard becomes an unreachable pattern and is removed.
@@ -74,7 +74,7 @@ Against v6.3.0 (`ff6b573c`):
                      #[allow(clippy::match_same_arms)]
                      match mouse {
                          CursorMoved {
-@@ -1072,7 +1079,68 @@
+@@ -1072,7 +1079,70 @@
                              self.pending_events.push(egui::Event::PointerGone);
                              EventStatus::Captured
                          }
@@ -130,6 +130,7 @@ Against v6.3.0 (`ff6b573c`):
 +                            let pos = egui::pos2(position.x as f32, position.y as f32);
 +                            self.last_cursor_pos = pos;
 +                            self.pending_events.push(egui::Event::PointerMoved(pos));
++                            self.hovered_files.clear();
 +                            if let baseview::DropData::Files(paths) = data {
 +                                self.dropped_files.extend(paths.into_iter().map(|p| {
 +                                    egui::DroppedFile {
@@ -137,14 +138,15 @@ Against v6.3.0 (`ff6b573c`):
 +                                        ..Default::default()
 +                                    }
 +                                }));
++                                EventStatus::AcceptDrop(baseview::DropEffect::Copy)
++                            } else {
++                                EventStatus::Ignored
 +                            }
-+                            self.hovered_files.clear();
-+                            EventStatus::AcceptDrop(baseview::DropEffect::Copy)
 +                        }
                      }
                  }
                  Event::Keyboard(kb) => {
-@@ -1510,6 +1578,8 @@
+@@ -1510,6 +1580,8 @@
                      #[cfg(target_os = "windows")]
                      render_thread,
                      pending_events: Vec::new(),

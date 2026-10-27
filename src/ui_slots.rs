@@ -339,28 +339,52 @@ impl JunglizerUi {
             self.message = NOT_AUDIO.into();
             return;
         };
-        match target {
-            DropTarget::FirstRun => self.load_path(0, path, LoadMode::FirstRun),
-            DropTarget::Empty => self.drop_into_slot(0, path),
-            DropTarget::Waveform => self.drop_into_slot(self.selected_loop, path),
-            DropTarget::Slot(slot) => self.drop_into_slot(slot, path),
+        let slot = match target {
+            DropTarget::FirstRun => return self.load_path(0, path, LoadMode::FirstRun),
+            DropTarget::Empty => {
+                let (slot, mode) = self.empty_target_slot();
+                return self.load_path(slot, path, mode);
+            }
+            DropTarget::Waveform => self.selected_loop,
+            DropTarget::Slot(slot) => slot,
+        };
+        // On the first-launch prompt, Break 1 takes a drop exactly as the
+        // prompt does. commit_load still refuses to clear edited slots.
+        if self.first_run && slot == 0 {
+            return self.load_path(0, path, LoadMode::FirstRun);
+        }
+        self.drop_into_slot(slot, path);
+    }
+
+    /// Where the empty state's Choose… and a drop on it load: a blank slot
+    /// takes the file; with none, the selected slot is relinked so its
+    /// slices and placements survive.
+    pub(crate) fn empty_target_slot(&self) -> (usize, LoadMode) {
+        let blank = |s: usize| self.state.get().slots[s].kind == SlotKind::Blank;
+        if blank(self.selected_loop) {
+            return (self.selected_loop, LoadMode::Load);
+        }
+        match (0..self.slot_audio.len()).find(|&s| blank(s)) {
+            Some(slot) => (slot, LoadMode::Load),
+            None => (self.selected_loop, LoadMode::Relink),
         }
     }
 
-    /// A missing or unreadable break is relinked, so its slices and
-    /// placements survive. A user break asks first, through the unload
-    /// dialog, because the new file replaces its slices and placements.
+    /// A blank slot just loads. A missing or unreadable break is relinked,
+    /// which keeps its slices and placements. Any other break, built-in or
+    /// user, asks first, because the new file replaces its slices and
+    /// placements.
     fn drop_into_slot(&mut self, slot: usize, path: PathBuf) {
         match self.slot_status(slot) {
+            SlotStatus::Blank => self.load_path(slot, path, LoadMode::Load),
             SlotStatus::Missing | SlotStatus::Unreadable => {
                 self.load_path(slot, path, LoadMode::Relink);
             }
-            SlotStatus::Ready(_) | SlotStatus::Loading => {
+            SlotStatus::Builtin | SlotStatus::Ready(_) | SlotStatus::Loading => {
                 self.confirm_unload = Some(slot);
                 self.unload_modal_fresh = true;
                 self.replace_with = Some(path);
             }
-            SlotStatus::Builtin | SlotStatus::Blank => self.load_path(slot, path, LoadMode::Load),
         }
     }
 
@@ -390,10 +414,16 @@ impl JunglizerUi {
         };
         if !hovered.is_empty() {
             let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("drop-target"));
+            // Muted while frozen or live, so it's clear the drop won't take.
+            let color = if self.breaks_editable() {
+                ACCENT
+            } else {
+                MUTED
+            };
             dashed_rect(
                 &ctx.layer_painter(layer),
                 rect.expand(2.0),
-                Stroke::new(2.0_f32, ACCENT),
+                Stroke::new(2.0_f32, color),
             );
         }
         if !dropped.is_empty() {
@@ -750,18 +780,8 @@ impl JunglizerUi {
                 .on_disabled_hover_text(LOCKED_HINT)
                 .clicked()
             {
-                // A blank slot takes the file; with none, relink the
-                // selected slot so its slices and placements survive.
-                let blank = |s: usize| self.state.get().slots[s].kind == SlotKind::Blank;
-                let target = if blank(self.selected_loop) {
-                    Some(self.selected_loop)
-                } else {
-                    (0..self.slot_audio.len()).find(|&s| blank(s))
-                };
-                match target {
-                    Some(slot) => self.choose_file(slot, LoadMode::Load),
-                    None => self.choose_file(self.selected_loop, LoadMode::Relink),
-                }
+                let (slot, mode) = self.empty_target_slot();
+                self.choose_file(slot, mode);
             }
             let at = Pos2::new(choose_rect.right() + 16.0 + restore_width / 2.0, row);
             let response = link(ui, at, restore, editable);
@@ -787,7 +807,7 @@ impl JunglizerUi {
         }
     }
 
-    /// Asks before unloading a break.
+    /// Asks before unloading a break, or before a dropped file replaces one.
     pub(crate) fn unload_modal(&mut self, ctx: &egui::Context) {
         let Some(slot) = self.confirm_unload else {
             return;
@@ -800,16 +820,31 @@ impl JunglizerUi {
         let id = egui::Id::new("unload-break");
         // No fade: the dialog is there on the frame it opens.
         let modal = egui::Modal::new(id).area(egui::Modal::default_area(id).fade_in(false));
+        let (question, confirm) = match &self.replace_with {
+            Some(path) => (
+                format!(
+                    "Replace Break {} with “{}”? Its slices and placements in this project will be removed.",
+                    slot + 1,
+                    path.file_name()
+                        .unwrap_or(path.as_os_str())
+                        .to_string_lossy()
+                ),
+                "Replace",
+            ),
+            None => (
+                "Unload this break? Its slices and placements in this project will be removed."
+                    .to_owned(),
+                "Unload",
+            ),
+        };
         let response = modal.show(ctx, |ui| {
             apply_style(ui);
             ui.set_max_width(330.0);
-            ui.label(
-                "Unload this break? Its slices and placements in this project will be removed.",
-            );
+            ui.label(question);
             ui.add_space(10.0);
             let mut choice = None;
             ui.horizontal(|ui| {
-                if ui.button("Unload").clicked() {
+                if ui.button(confirm).clicked() {
                     choice = Some(true);
                 }
                 if ui.button("Cancel").clicked() {
@@ -819,34 +854,37 @@ impl JunglizerUi {
             choice
         });
         match response.inner {
-            Some(true) => {
-                self.confirm_unload = None;
-                // A file dropped on a user break replaces it. The old break
-                // goes only if the new one loads.
-                if let Some(path) = self.replace_with.take() {
-                    self.load_path(slot, path, LoadMode::Load);
-                    return;
-                }
-                if !self.breaks_editable() {
-                    self.message = LOCKED_HINT.into();
-                    return;
-                }
-                let mut unloaded = false;
-                self.state.update(|s| unloaded = s.unload(slot));
-                if unloaded {
-                    self.refresh_slot_audio();
-                    self.message = format!("Break {} unloaded.", slot + 1).into();
-                }
-            }
-            Some(false) => {
-                self.confirm_unload = None;
-                self.replace_with = None;
-            }
-            None if response.should_close() => {
-                self.confirm_unload = None;
-                self.replace_with = None;
-            }
+            Some(confirmed) => self.close_unload_modal(confirmed),
+            None if response.should_close() => self.close_unload_modal(false),
             None => {}
+        }
+    }
+
+    /// Acts on the unload dialog's answer: unload the break, or load the
+    /// dropped file over it. Cancel leaves the slot as it was.
+    pub(crate) fn close_unload_modal(&mut self, confirmed: bool) {
+        let Some(slot) = self.confirm_unload.take() else {
+            return;
+        };
+        let replacement = self.replace_with.take();
+        if !confirmed {
+            return;
+        }
+        // A dropped file replaces the break. The old break goes only if the
+        // new one loads.
+        if let Some(path) = replacement {
+            self.load_path(slot, path, LoadMode::Load);
+            return;
+        }
+        if !self.breaks_editable() {
+            self.message = LOCKED_HINT.into();
+            return;
+        }
+        let mut unloaded = false;
+        self.state.update(|s| unloaded = s.unload(slot));
+        if unloaded {
+            self.refresh_slot_audio();
+            self.message = format!("Break {} unloaded.", slot + 1).into();
         }
     }
 }
@@ -1160,8 +1198,13 @@ mod tests {
     }
 
     #[test]
-    fn a_drop_on_a_break_button_loads_into_that_slot() {
+    fn a_drop_on_a_blank_slot_loads_without_asking() {
         let mut editor = JunglizerUi::new();
+        editor.state.update(|s| {
+            s.unload(2);
+            s.unload(3);
+        });
+        editor.refresh_slot_audio();
         editor.drop_files(DropTarget::Slot(2), &dropped("/x/b.aiff"));
         assert_eq!(
             pending_load(&editor),
@@ -1171,6 +1214,108 @@ mod tests {
         editor.selected_loop = 3;
         editor.drop_files(DropTarget::Waveform, &dropped("/x/c.mp3"));
         assert_eq!(pending_load(&editor), Some((3, "/x/c.mp3", LoadMode::Load)));
+        assert_eq!(editor.confirm_unload, None);
+    }
+
+    /// An editor whose built-in Break 3 has a slice placed from it.
+    fn editor_with_builtin_placement() -> JunglizerUi {
+        let mut editor = JunglizerUi::new();
+        editor.ensure_markers(2, 8);
+        editor.state.update(|s| {
+            assert!(s.place(crate::edit_state::StepPlacement {
+                active: true,
+                start_slot: 4,
+                span_slots: 1,
+                source_loop: 2,
+                source_slice: 3,
+                mode: 0,
+                bit_depth: 16,
+                repeats: 1,
+                locked: false,
+            }));
+        });
+        editor
+    }
+
+    #[test]
+    fn a_drop_on_a_builtin_break_asks_first_and_cancel_keeps_it() {
+        for target in [DropTarget::Slot(2), DropTarget::Waveform] {
+            let mut editor = editor_with_builtin_placement();
+            editor.selected_loop = 2;
+            let before = editor.state.get().clone();
+            editor.drop_files(target, &dropped("/x/new.wav"));
+            assert_eq!(editor.confirm_unload, Some(2));
+            assert_eq!(editor.replace_with, Some(PathBuf::from("/x/new.wav")));
+            assert!(pending_load(&editor).is_none());
+            assert_eq!(*editor.state.get(), before);
+            editor.close_unload_modal(false);
+            assert_eq!(editor.confirm_unload, None);
+            assert_eq!(editor.replace_with, None);
+            assert!(pending_load(&editor).is_none());
+            assert_eq!(*editor.state.get(), before);
+            assert_eq!(editor.state.get().slots[2].kind, SlotKind::Builtin);
+        }
+    }
+
+    #[test]
+    fn replacing_a_builtin_break_loads_the_drop_once_confirmed() {
+        let mut editor = editor_with_builtin_placement();
+        editor.drop_files(DropTarget::Slot(2), &dropped("/x/new.wav"));
+        editor.close_unload_modal(true);
+        assert_eq!(editor.confirm_unload, None);
+        assert_eq!(
+            pending_load(&editor),
+            Some((2, "/x/new.wav", LoadMode::Load))
+        );
+    }
+
+    #[test]
+    fn during_first_run_break_one_takes_a_drop_as_the_prompt_does() {
+        let mut editor = JunglizerUi::new();
+        editor.first_run = true;
+        editor.drop_files(DropTarget::Slot(0), &dropped("/x/a.wav"));
+        assert_eq!(
+            pending_load(&editor),
+            Some((0, "/x/a.wav", LoadMode::FirstRun))
+        );
+        editor.selected_loop = 0;
+        editor.drop_files(DropTarget::Waveform, &dropped("/x/b.wav"));
+        assert_eq!(
+            pending_load(&editor),
+            Some((0, "/x/b.wav", LoadMode::FirstRun))
+        );
+        // Breaks 2 to 4 still ask before replacing a built-in break.
+        editor.pending = PendingLoad::None;
+        editor.drop_files(DropTarget::Slot(2), &dropped("/x/c.wav"));
+        assert_eq!(editor.confirm_unload, Some(2));
+        assert!(pending_load(&editor).is_none());
+    }
+
+    #[test]
+    fn the_empty_target_drop_lands_where_choose_would() {
+        let mut editor = JunglizerUi::new();
+        editor.params = Some(Arc::new(crate::JunglizerParams::default()));
+        editor.state.update(|s| {
+            s.unload(2);
+        });
+        editor.refresh_slot_audio();
+        // The selected slot isn't blank, so the first blank one takes it.
+        assert_eq!(editor.empty_target_slot(), (2, LoadMode::Load));
+        editor.drop_files(DropTarget::Empty, &dropped("/x/a.wav"));
+        assert_eq!(pending_load(&editor), Some((2, "/x/a.wav", LoadMode::Load)));
+        // With no blank slot, the selected slot is relinked.
+        editor.state.update(|s| {
+            let suggested = Library::builtin()[2].suggested;
+            s.load_user(2, "/gone/b.wav", 60_828, 4, &suggested[..8])
+                .unwrap();
+        });
+        editor.selected_loop = 2;
+        assert_eq!(editor.empty_target_slot(), (2, LoadMode::Relink));
+        editor.drop_files(DropTarget::Empty, &dropped("/x/c.wav"));
+        assert_eq!(
+            pending_load(&editor),
+            Some((2, "/x/c.wav", LoadMode::Relink))
+        );
     }
 
     #[test]
@@ -1192,6 +1337,11 @@ mod tests {
         // A second drop while the dialog is up is ignored.
         editor.handle_file_drop(&egui::Context::default(), &[], &dropped("/x/other.wav"));
         assert_eq!(editor.replace_with, Some(PathBuf::from("/x/new.wav")));
+        editor.close_unload_modal(true);
+        assert_eq!(
+            pending_load(&editor),
+            Some((1, "/x/new.wav", LoadMode::Load))
+        );
     }
 
     #[test]
