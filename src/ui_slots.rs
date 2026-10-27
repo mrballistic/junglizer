@@ -945,21 +945,14 @@ impl JunglizerUi {
             ui.set_max_width(330.0);
             ui.label(question);
             ui.add_space(10.0);
-            let mut choice = None;
-            ui.horizontal(|ui| {
-                if ui.button(confirm).clicked() {
-                    choice = Some(true);
-                }
-                if ui.button("Cancel").clicked() {
-                    choice = Some(false);
-                }
-            });
-            choice
+            modal_buttons(ui, confirm)
         });
         match response.inner {
-            Some(confirmed) => self.close_unload_modal(confirmed),
-            None if response.should_close() => self.close_unload_modal(false),
-            None => {}
+            ModalChoice::Action => self.close_unload_modal(true),
+            ModalChoice::Cancel => self.close_unload_modal(false),
+            // Esc or a click outside the dialog.
+            ModalChoice::Open if response.should_close() => self.close_unload_modal(false),
+            ModalChoice::Open => {}
         }
     }
 
@@ -996,6 +989,66 @@ impl JunglizerUi {
             self.message = format!("Break {} unloaded.", slot + 1).into();
         }
     }
+}
+
+/// A confirm dialog's answer this frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ModalChoice {
+    Open,
+    Action,
+    Cancel,
+}
+
+/// The confirm buttons left to right, in each platform's own order, all
+/// right-aligned: Cancel then the action on macOS and Linux (GNOME), the
+/// action then Cancel on Windows.
+pub(crate) fn modal_button_order(windows: bool) -> [ModalChoice; 2] {
+    if windows {
+        [ModalChoice::Action, ModalChoice::Cancel]
+    } else {
+        [ModalChoice::Cancel, ModalChoice::Action]
+    }
+}
+
+/// The shared confirm row for the Unload, Replace and amen dialogs: a
+/// filled primary action and an outlined Cancel, right-aligned in the
+/// platform's order. Return takes the action; Esc closes the modal, which
+/// the caller reads as Cancel.
+pub(crate) fn modal_buttons(ui: &mut Ui, action: &str) -> ModalChoice {
+    let mut choice = ModalChoice::Open;
+    let height = ui.spacing().interact_size.y;
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), height),
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            // Right to left, so the order is reversed.
+            for button in modal_button_order(cfg!(target_os = "windows"))
+                .into_iter()
+                .rev()
+            {
+                let clicked = match button {
+                    ModalChoice::Action => ui
+                        .add(
+                            egui::Button::new(egui::RichText::new(action).color(WELL).strong())
+                                .fill(ACCENT)
+                                .stroke(Stroke::new(1.0_f32, ACCENT))
+                                .min_size(egui::vec2(76.0, 0.0)),
+                        )
+                        .clicked(),
+                    _ => ui
+                        .add(egui::Button::new("Cancel").min_size(egui::vec2(76.0, 0.0)))
+                        .clicked(),
+                };
+                if clicked {
+                    choice = button;
+                }
+            }
+        },
+    );
+    if choice == ModalChoice::Open && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+        choice = ModalChoice::Action;
+    }
+    choice
 }
 
 /// A dashed rectangle outline, as the break target draws it.
@@ -1569,9 +1622,12 @@ mod tests {
         editor.use_builtin_amen();
         assert!(*editor.state.get() == before, "the state changed");
         assert!(editor.confirm_amen && editor.confirm_open());
-        // The dialog is modal: a drop under it is ignored.
-        editor.handle_file_drop(&egui::Context::default(), &[], &dropped("/x/a.wav"));
+        // The dialog is modal: a drop under it is ignored, though the
+        // pointer is over a drop target.
+        let ctx = pointer_over_target(&mut editor);
+        editor.handle_file_drop(&ctx, &[], &dropped("/x/a.wav"));
         assert!(pending_load(&editor).is_none());
+        assert_eq!(editor.confirm_unload, None);
         editor.close_unload_modal(false);
         assert!(!editor.confirm_open());
         assert!(*editor.state.get() == before, "Cancel changed the state");
@@ -1587,6 +1643,37 @@ mod tests {
             editor.message,
             "The Junglizer amen is back in all four slots."
         );
+        // With the dialog closed, the same drop reaches the target: a
+        // built-in break asks before the file replaces it.
+        editor.handle_file_drop(&ctx, &[], &dropped("/x/a.wav"));
+        assert_eq!(editor.confirm_unload, Some(0));
+    }
+
+    /// A context whose pointer rests on a drop target for Break 1.
+    fn pointer_over_target(editor: &mut JunglizerUi) -> egui::Context {
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                events: vec![egui::Event::PointerMoved(Pos2::new(20.0, 20.0))],
+                ..Default::default()
+            },
+            |_| {},
+        );
+        assert!(ctx.input(|i| i.pointer.latest_pos()).is_some());
+        editor.drop_targets.push((
+            Rect::from_min_size(Pos2::ZERO, vec2(100.0, 100.0)),
+            DropTarget::Slot(0),
+        ));
+        ctx
+    }
+
+    #[test]
+    fn confirm_buttons_follow_each_platforms_order() {
+        use ModalChoice::{Action, Cancel};
+        // macOS and Linux: Cancel, then the action on the far right.
+        assert_eq!(modal_button_order(false), [Cancel, Action]);
+        // Windows: the action, then Cancel.
+        assert_eq!(modal_button_order(true), [Action, Cancel]);
     }
 
     #[test]
