@@ -38,6 +38,8 @@ on it.
 - Making the repository public. That needs its own step, including removing the KAN WAVs from
   git history. Note it, but don't do it here.
 - A Linux or Windows installer. The release ships zips, as today.
+- A user-facing standalone app (tempo and play controls, audio export, packaged apps). Todd: that's
+  beta 3. Leave the existing developer standalone build as it is.
 - An automatic “rate us” or onboarding tour. The splash below is the only first-run guidance.
 
 ## Anti-goals (failure even if it works)
