@@ -34,7 +34,7 @@ The plugin exposes its controls as host automation parameters, including source 
 
 ## Build and verify
 
-Requires Rust 1.92 or newer, `cargo-truce` 6.3, and Xcode command-line tools on macOS. The four WAV files in `sample/` are embedded at build time.
+Requires Rust 1.92 or newer, `cargo-truce` 6.3, and Xcode command-line tools on macOS. The four built-in break WAV files in `sample/` are embedded at build time, and their license terms are in `sample/LICENSE.md`.
 
 ```sh
 cargo fmt --all -- --check
@@ -45,4 +45,4 @@ cargo truce validate --auval
 
 `cargo truce build` stages the format bundles in `target/bundles/`. `cargo truce install --au2 --user --no-build` installs the staged AU for the current user. The [CI and release workflow](.github/workflows/ci-release.yml) tests pushes and pull requests and builds both Mac architectures. A release maintainer signs, notarizes, and staples each format before publishing the downloads; see [release signing](docs/RELEASE-SIGNING.md). This beta retains the current plugin IDs in `truce.toml`; changing them would affect project recall.
 
-The [UI design brief](docs/UI-DESIGN-BRIEF.md), [implemented design system](DESIGN.md), [validation record](docs/UI-REFRESH-VALIDATION.md), and [0.9 release notes](docs/RELEASE-NOTES-0.9.0-beta.1.md) document the current scope and its limits. Nick Collins's *Algorithmic Composition Methods for Breakbeat Science* ([local PDF](docs/acmethodsforbbsci.pdf)) informed the separation of source cuts, placements, and playback. [Livecut](https://github.com/mdsp/Livecut) inspired the first editable fill suggestion; Junglizer uses its own code and deterministic rendering of accepted fills.
+The [UI design brief](docs/UI-DESIGN-BRIEF.md), [implemented design system](DESIGN.md), [validation record](docs/UI-REFRESH-VALIDATION.md), and [0.9 release notes](docs/RELEASE-NOTES-0.9.0-beta.1.md) document the current scope and its limits. Nick Collins's *Algorithmic Composition Methods for Breakbeat Science* ([local PDF](docs/acmethodsforbbsci.pdf)) informed the separation of source cuts, placements, and playback. [Livecut](https://github.com/mdsp/Livecut) inspired the first editable fill suggestion; Junglizer uses its own code and deterministic rendering of accepted fills. Built-in breaks played on the Salamander Drumkit by Alexander Holm (CC BY-SA 3.0).
