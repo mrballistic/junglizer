@@ -31,7 +31,7 @@ pub fn suggest_bar(state: &mut EditState, bar: usize, source_loop: usize) -> usi
     }
     let mut choices = [0_u8; 32];
     let mut choice_count = 0;
-    for slice in 0..state.source_count {
+    for slice in 0..state.slice_count(source_loop) {
         if state.slice(source_loop, slice as usize).is_some() {
             choices[choice_count] = slice;
             choice_count += 1;

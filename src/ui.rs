@@ -1,4 +1,4 @@
-use crate::edit_state::{EditState, StepPlacement};
+use crate::edit_state::{EditState, SlotKind, StepPlacement};
 use crate::live::CapturedPhrase;
 use crate::midi::export_to_music;
 use crate::sample::StereoSample;
@@ -74,23 +74,26 @@ impl JunglizerUi {
         }
     }
 
-    fn ensure_markers(&mut self, count: u8) {
-        let suggestions: [_; 4] = std::array::from_fn(|i| self.sources[i].suggested_slices(count));
+    fn ensure_markers(&mut self, source_loop: usize, count: u8) {
+        let suggested = self.sources[source_loop].suggested_slices(count);
+        let frames = self.sources[source_loop].frames.len() as u32;
         self.state.update(|state| {
-            state.source_count = count;
-            state.touch();
-            for (i, suggested) in suggestions.iter().enumerate() {
-                if !state.markers[i][count as usize - 1].valid {
-                    state.set_markers(i, &suggested[..count as usize]);
+            state.set_slice_count(source_loop, count);
+            if state.slots[source_loop].kind == SlotKind::Builtin {
+                if state.marker_set(source_loop).is_some_and(|set| !set.valid) {
+                    state.set_markers(source_loop, &suggested[..count as usize]);
                 }
-            }
-            for placement in &mut state.placements {
-                if placement.active && placement.source_slice >= count {
-                    placement.active = false;
-                }
+            } else if state.slots[source_loop].kind == SlotKind::User {
+                let frames = match state.slots[source_loop].frames {
+                    0 => frames,
+                    user => user,
+                };
+                state.fill_even_markers(source_loop, frames);
             }
         });
-        self.selected_slice = self.selected_slice.min(count as usize - 1);
+        if source_loop == self.selected_loop {
+            self.selected_slice = self.selected_slice.min(count as usize - 1);
+        }
     }
 
     fn place(&mut self, slot: u8, context: &PluginContext<JunglizerParams>) {
@@ -167,7 +170,7 @@ impl JunglizerUi {
             );
         }
         if let Some(set) = set.filter(|set| set.valid && frame_count > 0) {
-            for i in 0..self.state.get().source_count as usize {
+            for i in 0..self.state.get().slice_count(self.selected_loop) as usize {
                 let marker = set.slices[i];
                 let x = rect.left() + rect.width() * marker.start as f32 / frame_count as f32;
                 let end_x = rect.left() + rect.width() * marker.end as f32 / frame_count as f32;
@@ -217,7 +220,8 @@ impl JunglizerUi {
                 && response.drag_started()
                 && let Some(pointer) = response.interact_pointer_pos()
             {
-                self.dragging_marker = (1..self.state.get().source_count as usize)
+                self.dragging_marker = (1..self.state.get().slice_count(self.selected_loop)
+                    as usize)
                     .filter(|&i| {
                         let x = rect.left()
                             + rect.width() * set.slices[i].start as f32 / frame_count as f32;
@@ -246,7 +250,7 @@ impl JunglizerUi {
                     (self.dragging_marker, response.interact_pointer_pos())
             {
                 let min = set.slices[i - 1].start.saturating_add(1);
-                let max = if i + 1 < self.state.get().source_count as usize {
+                let max = if i + 1 < self.state.get().slice_count(self.selected_loop) as usize {
                     set.slices[i + 1].start.saturating_sub(1)
                 } else {
                     frame_count as u32 - 1
@@ -764,7 +768,7 @@ impl JunglizerUi {
         self.state.update(|state| {
             state.freeze_phrase(
                 captured.placements,
-                captured.source_count,
+                captured.slice_counts,
                 captured.player_slots,
                 captured.bars,
             );
@@ -818,14 +822,16 @@ impl JunglizerUi {
 impl EditorUi<JunglizerParams> for JunglizerUi {
     fn opened(&mut self, context: &PluginContext<JunglizerParams>) {
         self.state = StateBinding::new(context);
-        let count = self.state.get().source_count;
-        if (0..4).any(|index| {
-            self.state
+        for index in 0..4 {
+            if self
+                .state
                 .get()
                 .marker_set(index)
                 .is_some_and(|set| !set.valid)
-        }) {
-            self.ensure_markers(count);
+            {
+                let count = self.state.get().slice_count(index);
+                self.ensure_markers(index, count);
+            }
         }
     }
 
@@ -839,7 +845,7 @@ impl EditorUi<JunglizerParams> for JunglizerUi {
         self.state.sync();
         self.selected_loop = (context.params().edit_break.value() as usize - 1).min(3);
         self.selected_slice = (context.params().edit_slice.value() as usize - 1)
-            .min(self.state.get().source_count as usize - 1);
+            .min(self.state.get().slice_count(self.selected_loop) as usize - 1);
         self.selected_slot = Some(
             (context.params().edit_slot.value() as u8 - 1).min(self.state.get().player_slots - 1),
         );
@@ -1240,14 +1246,14 @@ impl JunglizerUi {
                 }
             }
             ui.separator();
-            let mut count = self.state.get().source_count;
+            let mut count = self.state.get().slice_count(self.selected_loop);
             ui.label("Source slices");
             if ui
                 .add_enabled(editable, egui::DragValue::new(&mut count).range(1..=32))
                 .on_disabled_hover_text("Unfreeze or stop live variations to edit source slices.")
                 .changed()
             {
-                self.ensure_markers(count);
+                self.ensure_markers(self.selected_loop, count);
                 context.automate(P::SourceSlices, f64::from(count - 1) / 31.0);
             }
             ui.colored_label(MUTED, "shared by all 4");
@@ -1303,7 +1309,7 @@ impl JunglizerUi {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
             ui.spacing_mut().button_padding.x = 4.0;
-            let count = self.state.get().source_count as usize;
+            let count = self.state.get().slice_count(self.selected_loop) as usize;
             let width =
                 ((ui.available_width() - (count - 1) as f32 * 3.0) / count as f32).max(26.0);
             for i in 0..count {
@@ -1572,7 +1578,7 @@ impl JunglizerUi {
                 if enabled { self.freeze_live(context); }
                 else {
                     let bars = [context.params().bar_1.value(), context.params().bar_2.value(), context.params().bar_3.value(), context.params().bar_4.value()].map(|v| (v - 1) as u8);
-                    self.state.update(|s| s.freeze_phrase(s.placements, s.source_count, s.player_slots, bars));
+                    self.state.update(|s| s.freeze_phrase(s.placements, s.slice_counts(), s.player_slots, bars));
                     context.automate(P::LiveVariations, 0.0);
                     self.message = "Phrase frozen. Unfreeze to edit; individual slice locks are unchanged.";
                 }
