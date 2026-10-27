@@ -267,25 +267,61 @@ impl Library {
 #[cfg(test)]
 const PANIC_FOR_TESTS: &str = "/junglizer/panic-for-tests.wav";
 
+fn is_slash(byte: u8) -> bool {
+    byte == b'\\' || byte == b'/'
+}
+
+/// Splits a Windows `\\.\` or `\\?\` prefix (either slash) off `path`,
+/// returning the namespace character and the rest. `\\.` and `\\?` with
+/// nothing after count too.
+fn win32_namespace(path: &[u8]) -> Option<(u8, &[u8])> {
+    match path {
+        [a, b, ns @ (b'.' | b'?')] if is_slash(*a) && is_slash(*b) => Some((*ns, &[])),
+        [a, b, ns @ (b'.' | b'?'), c, rest @ ..]
+            if is_slash(*a) && is_slash(*b) && is_slash(*c) =>
+        {
+            Some((*ns, rest))
+        }
+        _ => None,
+    }
+}
+
+/// `<letter>:\…` after a `\\?\` prefix.
+fn is_drive_path(rest: &[u8]) -> bool {
+    matches!(rest, [letter, b':', slash, ..] if letter.is_ascii_alphabetic() && is_slash(*slash))
+}
+
+/// `UNC\…` after a `\\?\` prefix.
+fn is_unc_path(rest: &[u8]) -> bool {
+    matches!(rest, [u, n, c, slash, ..]
+        if [*u, *n, *c].eq_ignore_ascii_case(b"UNC") && is_slash(*slash))
+}
+
 /// Whether the loader may open `path` at all. Windows device namespaces
-/// (`\\.\…`, `\\?\GLOBALROOT\…`) reach raw disks and ports, so they are
-/// refused, as is the NT `\??\` prefix. UNC shares (`\\server\share\…`) and long-path prefixes are fine.
+/// reach raw disks, volumes and ports, so the `\\?\` namespace is an
+/// allowlist: only `\\?\<letter>:\…` and `\\?\UNC\…`. `\\.\…` and the NT
+/// `\??\` prefix are always refused. Plain and UNC paths are allowed here;
+/// `is_remote` decides whether a restore may open a share.
 fn path_allowed(path: &str) -> bool {
     let bytes = path.as_bytes();
-    // `\??\` is the NT object-manager prefix, another way to a device.
-    if bytes.starts_with(b"\\??\\") {
+    if bytes.starts_with(br"\??\") {
         return false;
     }
-    let slash = |b: u8| b == b'\\' || b == b'/';
-    if bytes.len() < 4 || !(slash(bytes[0]) && slash(bytes[1]) && slash(bytes[3])) {
-        return true;
+    match win32_namespace(bytes) {
+        Some((b'?', rest)) => is_drive_path(rest) || is_unc_path(rest),
+        Some(_) => false,
+        None => true,
     }
-    match bytes[2] {
-        b'.' => false,
-        b'?' => !bytes[4..]
-            .get(..10)
-            .is_some_and(|word| word.eq_ignore_ascii_case(b"GLOBALROOT")),
-        _ => true,
+}
+
+/// Whether `path` names a network location: `\\server\…`, `//server/…`
+/// or `\\?\UNC\…`, with either slash.
+fn is_remote(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    match win32_namespace(bytes) {
+        Some((b'?', rest)) => is_unc_path(rest),
+        Some(_) => false,
+        None => bytes.len() > 2 && is_slash(bytes[0]) && is_slash(bytes[1]),
     }
 }
 
@@ -324,7 +360,7 @@ fn run_pending(inner: &Inner) {
             let result = SlotResult {
                 seq,
                 path_hash: hash,
-                outcome: load(&path, hash),
+                outcome: load(&path, hash, purpose == Purpose::Restore as usize),
             };
             // Replacing the old result frees it here, on the loader.
             *inner.results[slot][purpose]
@@ -339,11 +375,12 @@ fn run_pending(inner: &Inner) {
 
 /// Loads one requested file. A panic anywhere in decoding or analysis
 /// becomes `Unreadable` for that request instead of killing the loader.
-fn load(path: &[u8], hash: u64) -> LoadOutcome {
-    std::panic::catch_unwind(|| load_unguarded(path, hash)).unwrap_or(LoadOutcome::Unreadable)
+fn load(path: &[u8], hash: u64, restore: bool) -> LoadOutcome {
+    std::panic::catch_unwind(|| load_unguarded(path, hash, restore))
+        .unwrap_or(LoadOutcome::Unreadable)
 }
 
-fn load_unguarded(path: &[u8], hash: u64) -> LoadOutcome {
+fn load_unguarded(path: &[u8], hash: u64, restore: bool) -> LoadOutcome {
     let Ok(path) = std::str::from_utf8(path) else {
         return LoadOutcome::Unreadable;
     };
@@ -355,6 +392,15 @@ fn load_unguarded(path: &[u8], hash: u64) -> LoadOutcome {
     // file: never a device, a pipe or a directory.
     if !path_allowed(path) {
         return LoadOutcome::Unreadable;
+    }
+    // Never open a network path from project state, not even to stat it.
+    // On Windows, touching `\\server\share` makes the OS sign in to that
+    // server with the user's NTLM hash, so a project from someone else could
+    // harvest it. A restored share shows as missing and the user can Relink;
+    // choosing a file on a share in the dialog (`Choose`) is still allowed.
+    // Keep this before every filesystem call, `metadata` included.
+    if restore && is_remote(path) {
+        return LoadOutcome::Missing;
     }
     let path = Path::new(path);
     match std::fs::metadata(path) {
@@ -604,6 +650,14 @@ mod tests {
             "//./PhysicalDrive0",
             "//?/GlobalRoot/Device/a.wav",
             r"\??\GLOBALROOT\Device\a.wav",
+            r"\\?\PhysicalDrive0",
+            r"\\?\Volume{abc}\x.wav",
+            "//?/Volume{abc}/x.wav",
+            r"\\?\CC:\a.wav",
+            r"\\?\UNCX\srv\a.wav",
+            r"\\?\",
+            r"\\?",
+            r"\\.",
         ] {
             assert!(!path_allowed(bad), "{bad}");
         }
@@ -611,6 +665,10 @@ mod tests {
             r"\\server\share\breaks\amen.wav",
             r"C:\Users\todd\amen.wav",
             r"\\?\C:\very\long\amen.wav",
+            r"\\?\c:\a.wav",
+            "//?/c:/a.wav",
+            r"\\?\UNC\srv\share\a.wav",
+            r"\\?\unc\srv\share\a.wav",
             "/Users/todd/amen.wav",
             "/home/todd/.breaks/amen.wav",
         ] {
@@ -620,6 +678,60 @@ mod tests {
         assert!(matches!(
             outcome_of(&lib, br"\\.\PhysicalDrive0"),
             LoadOutcome::Unreadable
+        ));
+    }
+
+    #[test]
+    fn network_paths_are_recognized_as_remote() {
+        for remote in [
+            r"\\srv\share\loop 174.wav",
+            "//srv/share/loop.wav",
+            r"\\?\UNC\srv\share\a.wav",
+            r"\\?\unc\srv\share\a.wav",
+            "//?/UNC/srv/share/a.wav",
+            r"\/srv\share\a.wav",
+        ] {
+            assert!(is_remote(remote), "{remote}");
+        }
+        for local in [
+            r"C:\breaks\a.wav",
+            r"\\?\C:\breaks\a.wav",
+            "/Users/todd/a.wav",
+            "relative/a.wav",
+            r"\breaks\a.wav",
+            "",
+        ] {
+            assert!(!is_remote(local), "{local}");
+        }
+    }
+
+    #[test]
+    fn restore_never_touches_a_network_path_but_choose_may() {
+        // Opening a share from a project would leak the user's NTLM hash.
+        let lib = Library::default();
+        lib.request(0, br"\\srv\share\loop 174.wav", Purpose::Restore)
+            .unwrap();
+        lib.run_pending();
+        assert!(matches!(
+            lib.result(0, Purpose::Restore).unwrap().outcome,
+            LoadOutcome::Missing
+        ));
+        // A real local file spelled with a leading `//`: POSIX resolves it
+        // like `/`, but the rule counts it as remote. Restore refuses it
+        // without looking; Choose opens and loads it.
+        let local = fixture("loop_160_4beats_mono16_48k.wav");
+        let remote = format!("/{}", local.to_str().unwrap());
+        assert!(is_remote(&remote));
+        lib.request(1, remote.as_bytes(), Purpose::Restore).unwrap();
+        lib.request(1, remote.as_bytes(), Purpose::Choose).unwrap();
+        lib.run_pending();
+        assert!(matches!(
+            lib.result(1, Purpose::Restore).unwrap().outcome,
+            LoadOutcome::Missing
+        ));
+        assert!(matches!(
+            lib.result(1, Purpose::Choose).unwrap().outcome,
+            LoadOutcome::Loaded(_)
         ));
     }
 
