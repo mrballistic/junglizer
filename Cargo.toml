@@ -60,3 +60,10 @@ inherits = "release"
 
 [dev-dependencies]
 hound = "3.5"
+
+# Vendored, patched copy of truce-egui 6.3.0 that forwards baseview's file
+# drag-and-drop events to egui (upstream drops them). See
+# vendor/truce-egui/src/editor.rs ("junglizer patch: file drop") and
+# docs/upstream/truce-egui-file-drop.md. Remove once upstream ships the fix.
+[patch.crates-io]
+truce-egui = { path = "vendor/truce-egui" }
