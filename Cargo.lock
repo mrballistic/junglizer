@@ -884,6 +884,7 @@ name = "junglizer"
 version = "0.9.0-beta.1"
 dependencies = [
  "clap-sys",
+ "crossbeam-queue",
  "egui",
  "hound",
  "png",
