@@ -11,7 +11,7 @@ pub mod tempo;
 mod tone;
 mod ui;
 
-use edit_state::{EditState, StepPlacement};
+use edit_state::{EditState, SlotKind, StepPlacement};
 use live::LiveSnapshot;
 use sample::StereoSample;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -299,13 +299,13 @@ impl Junglizer {
         });
         let mut edit = EditState::default();
         for count in 1..=32 {
-            edit.source_count = count;
             for (index, source) in sources.iter().enumerate() {
-                let suggested = source.suggested_slices(count);
-                edit.set_markers(index, &suggested[..count as usize]);
+                edit.markers[index][count as usize - 1] = edit_state::MarkerSet {
+                    valid: true,
+                    slices: source.suggested_slices(count),
+                };
             }
         }
-        edit.source_count = 8;
         edit.touch();
         let live_pattern = edit.clone();
         Self {
@@ -330,13 +330,10 @@ impl Junglizer {
         if previous.is_some_and(|before| current.source_slices != before.source_slices)
             && !self.edit.frozen
         {
-            self.edit.source_count = current.source_slices;
-            for item in &mut self.edit.placements {
-                if item.active && item.source_slice >= current.source_slices {
-                    item.active = false;
-                }
-            }
-            self.edit.touch();
+            let loop_index = current.source_loop as usize;
+            self.edit.set_slice_count(loop_index, current.source_slices);
+            let frames = self.sources[loop_index].frames.len() as u32;
+            self.edit.fill_even_markers(loop_index, frames);
         }
         if previous.is_some_and(|before| current.player_slots != before.player_slots)
             && !self.edit.frozen
@@ -349,7 +346,7 @@ impl Junglizer {
         }
         let Some(before) = previous else { return };
         if current.bass != before.bass && !self.edit.frozen {
-            let source_count = self.edit.source_count;
+            let source_count = self.edit.slice_count(current.source_loop as usize);
             if let Some(set) = self.edit.marker_set_mut(current.source_loop as usize) {
                 if current.source_slice < source_count {
                     set.slices[current.source_slice as usize].bass = current.bass;
@@ -358,7 +355,7 @@ impl Junglizer {
             }
         }
         if current.muted != before.muted && !self.edit.frozen {
-            let source_count = self.edit.source_count;
+            let source_count = self.edit.slice_count(current.source_loop as usize);
             if let Some(set) = self.edit.marker_set_mut(current.source_loop as usize)
                 && current.source_slice < source_count
             {
@@ -369,12 +366,12 @@ impl Junglizer {
         if current.marker_position != before.marker_position
             && !self.edit.frozen
             && current.source_slice > 0
-            && current.source_slice < self.edit.source_count
+            && current.source_slice < self.edit.slice_count(current.source_loop as usize)
         {
             let loop_index = current.source_loop as usize;
             let index = current.source_slice as usize;
             let frames = self.sources[loop_index].frames.len() as u32;
-            let source_count = self.edit.source_count as usize;
+            let source_count = self.edit.slice_count(loop_index) as usize;
             if let Some(set) = self.edit.marker_set_mut(loop_index) {
                 let min = set.slices[index - 1].start.saturating_add(1);
                 let max = if index + 1 < source_count {
@@ -478,7 +475,7 @@ impl Junglizer {
             };
             self.edit.freeze_phrase(
                 placements,
-                self.edit.source_count,
+                self.edit.slice_counts(),
                 self.edit.player_slots,
                 bars,
             );
@@ -644,7 +641,7 @@ impl Junglizer {
                 continue;
             }
             if let Some(set) = pattern.marker_set(source_index) {
-                for marker in set.slices[..pattern.source_count as usize]
+                for marker in set.slices[..pattern.slice_count(source_index) as usize]
                     .iter()
                     .filter(|marker| marker.active && marker.bass)
                 {
@@ -846,6 +843,10 @@ impl PluginLogic for Junglizer {
             return Err(StateLoadError::Malformed("Junglizer pattern"));
         };
         for source in 0..4 {
+            // User and blank slots keep exactly what the project saved.
+            if edit.slots[source].kind != SlotKind::Builtin {
+                continue;
+            }
             for count in 0..32 {
                 if !edit.markers[source][count].valid {
                     edit.markers[source][count] = state.edit.markers[source][count];
@@ -921,6 +922,35 @@ mod audio_tests {
         let mut context = ProcessContext::new(&stopped, 44_100.0, 1, &mut output_events);
         Junglizer::process(&mut state, &params, &mut buffer, &events, &mut context);
         assert_eq!(quiet[0], 0.0);
+    }
+
+    #[test]
+    fn source_slices_sets_the_selected_slot_and_fills_even_markers() {
+        use truce::params::Params;
+        let mut state = Junglizer::load_sources();
+        let frames = state.sources[1].frames.len() as u32;
+        let marks = [0_u32, 1, 2, 3].map(|i| SliceMarker {
+            start: frames * i / 4,
+            end: frames * (i + 1) / 4,
+            active: true,
+            bass: false,
+        });
+        state
+            .edit
+            .load_user(1, "/a.wav", frames, 4, &marks)
+            .unwrap();
+        let params = JunglizerParams::default();
+        params.set_normalized(JunglizerParamsParamId::EditBreak.into(), 1.0 / 3.0);
+        state.sync_controls(&params, [0, 1, 2, 3]);
+        params.set_normalized(JunglizerParamsParamId::SourceSlices.into(), 11.0 / 31.0);
+        state.sync_controls(&params, [0, 1, 2, 3]);
+        assert_eq!(state.edit.slice_count(0), 8);
+        assert_eq!(state.edit.slice_count(1), 12);
+        let set = state.edit.marker_set(1).expect("marker set");
+        assert!(set.valid);
+        assert_eq!(set.slices[0].start, 0);
+        assert_eq!(set.slices[11].end, frames);
+        assert!(set.slices[..12].iter().all(|slice| slice.active));
     }
 
     #[test]

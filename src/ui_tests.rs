@@ -47,7 +47,10 @@ fn fixture(
         matches!(name, "playing" | "live-1" | "live-2" | "frozen-midi"),
     );
     let mut editor = JunglizerUi::new();
-    editor.ensure_markers(if name == "density-32" { 32 } else { 8 });
+    let count = if name == "density-32" { 32 } else { 8 };
+    for source in 0..4 {
+        editor.ensure_markers(source, count);
+    }
     if name != "ghost-stopped" && name != "missing-samples" {
         editor.state.update(|s| {
             for (slot, source, slice, length) in [
@@ -129,7 +132,7 @@ fn fixture(
                     }
                 }
             }
-            s.freeze_phrase(s.placements, s.source_count, s.player_slots, [0, 1, 2, 3]);
+            s.freeze_phrase(s.placements, s.slice_counts(), s.player_slots, [0, 1, 2, 3]);
         });
         params.set_normalized(P::Playback.into(), 1.0);
     }

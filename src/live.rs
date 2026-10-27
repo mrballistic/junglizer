@@ -1,14 +1,15 @@
 //! Lock-free copy of the exact live phrase currently rendered by the DSP.
 //! The UI uses this copy when the user freezes a variation.
 
-use crate::edit_state::{EditState, MAX_STEPS, StepPlacement};
+use crate::edit_state::{EditState, LOOP_COUNT, MAX_STEPS, StepPlacement};
 use std::sync::atomic::{AtomicI64, AtomicU32, AtomicU64, Ordering};
 
 pub struct LiveSnapshot {
     sequence: AtomicU64,
     cycle: AtomicI64,
     bars: AtomicU32,
-    counts: AtomicU32,
+    /// `player_slots` in the low byte, then one byte per slot's slice count.
+    counts: AtomicU64,
     placements: [AtomicU32; MAX_STEPS],
 }
 
@@ -16,7 +17,7 @@ pub struct LiveSnapshot {
 pub struct CapturedPhrase {
     pub cycle: i64,
     pub bars: [u8; 4],
-    pub source_count: u8,
+    pub slice_counts: [u8; LOOP_COUNT],
     pub player_slots: u8,
     pub placements: [StepPlacement; MAX_STEPS],
 }
@@ -27,7 +28,7 @@ impl Default for LiveSnapshot {
             sequence: AtomicU64::new(0),
             cycle: AtomicI64::new(0),
             bars: AtomicU32::new(0),
-            counts: AtomicU32::new(0),
+            counts: AtomicU64::new(0),
             placements: std::array::from_fn(|_| AtomicU32::new(0)),
         }
     }
@@ -44,7 +45,13 @@ impl LiveSnapshot {
             Ordering::Relaxed,
         );
         self.counts.store(
-            u32::from(pattern.source_count) | (u32::from(pattern.player_slots) << 8),
+            pattern
+                .slice_counts()
+                .into_iter()
+                .enumerate()
+                .fold(u64::from(pattern.player_slots), |bits, (i, count)| {
+                    bits | (u64::from(count) << (8 * (i + 1)))
+                }),
             Ordering::Relaxed,
         );
         for (atom, item) in self.placements.iter().zip(pattern.placements) {
@@ -69,8 +76,8 @@ impl LiveSnapshot {
                 return Some(CapturedPhrase {
                     cycle,
                     bars: std::array::from_fn(|i| ((bars_bits >> (i * 2)) & 3) as u8),
-                    source_count: (counts & 255) as u8,
-                    player_slots: ((counts >> 8) & 255) as u8,
+                    slice_counts: std::array::from_fn(|i| ((counts >> (8 * (i + 1))) & 255) as u8),
+                    player_slots: (counts & 255) as u8,
                     placements,
                 });
             }
@@ -97,11 +104,15 @@ mod tests {
             repeats: 8,
             locked: true,
         };
+        pattern.set_slice_count(1, 24);
+        pattern.player_slots = 16;
         let snapshot = LiveSnapshot::default();
         snapshot.publish(&pattern, 4, [3, 1, 2, 0]);
         let captured = snapshot.capture().unwrap();
         assert_eq!(captured.cycle, 4);
         assert_eq!(captured.bars, [3, 1, 2, 0]);
         assert_eq!(captured.placements[0], pattern.placements[0]);
+        assert_eq!(captured.slice_counts, [8, 24, 8, 8]);
+        assert_eq!(captured.player_slots, 16);
     }
 }
