@@ -340,7 +340,7 @@ impl JunglizerUi {
             return;
         };
         let slot = match target {
-            DropTarget::FirstRun => return self.load_path(0, path, LoadMode::FirstRun),
+            DropTarget::FirstRun => 0,
             DropTarget::Empty => {
                 let (slot, mode) = self.empty_target_slot();
                 return self.load_path(slot, path, mode);
@@ -349,8 +349,12 @@ impl JunglizerUi {
             DropTarget::Slot(slot) => slot,
         };
         // On the first-launch prompt, Break 1 takes a drop exactly as the
-        // prompt does. commit_load still refuses to clear edited slots.
-        if self.first_run && slot == 0 {
+        // prompt does, but only on an untouched instance. ui() clears
+        // first_run on the frame after an edit, so check here too: once the
+        // state is edited, commit_load would downgrade FirstRun to a plain
+        // Load that replaces Break 1's slices and placements without asking.
+        // An edited instance goes through drop_into_slot's confirm dialog.
+        if self.first_run && slot == 0 && self.state.get().is_pristine() {
             return self.load_path(0, path, LoadMode::FirstRun);
         }
         self.drop_into_slot(slot, path);
@@ -1289,6 +1293,40 @@ mod tests {
         editor.drop_files(DropTarget::Slot(2), &dropped("/x/c.wav"));
         assert_eq!(editor.confirm_unload, Some(2));
         assert!(pending_load(&editor).is_none());
+    }
+
+    #[test]
+    fn during_first_run_an_edited_break_one_asks_before_a_drop_replaces_it() {
+        for target in [
+            DropTarget::Slot(0),
+            DropTarget::Waveform,
+            DropTarget::FirstRun,
+        ] {
+            let mut editor = JunglizerUi::new();
+            editor.first_run = true;
+            editor.selected_loop = 0;
+            editor.ensure_markers(0, 8);
+            editor.state.update(|s| {
+                assert!(s.place(crate::edit_state::StepPlacement {
+                    active: true,
+                    start_slot: 0,
+                    span_slots: 1,
+                    source_loop: 0,
+                    source_slice: 2,
+                    mode: 0,
+                    bit_depth: 16,
+                    repeats: 1,
+                    locked: false,
+                }));
+            });
+            assert!(!editor.state.get().is_pristine());
+            let before = editor.state.get().clone();
+            editor.drop_files(target, &dropped("/x/a.wav"));
+            assert_eq!(editor.confirm_unload, Some(0), "{target:?}");
+            assert_eq!(editor.replace_with, Some(PathBuf::from("/x/a.wav")));
+            assert!(pending_load(&editor).is_none(), "{target:?}");
+            assert_eq!(*editor.state.get(), before);
+        }
     }
 
     #[test]
