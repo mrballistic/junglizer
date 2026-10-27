@@ -13,7 +13,7 @@ use std::time::Duration;
 use truce::prelude::PluginContext;
 
 /// Shown on every break control that's disabled while frozen or live.
-pub(crate) const LOCKED_HINT: &str = "Unfreeze or stop live variations to change breaks.";
+pub(crate) const LOCKED_HINT: &str = "Choose Edit under Phrase to change breaks.";
 const UNREADABLE: &str = "Junglizer couldn’t read that file. Use a WAV, AIFF or MP3.";
 const TARGET_PROMPT: &str = if DROP_SUPPORTED {
     "Drop your own break here (4 to 32 beats, 80–195 BPM)"
@@ -911,8 +911,15 @@ impl JunglizerUi {
     /// or before the amen replaces missing breaks.
     pub(crate) fn unload_modal(&mut self, ctx: &egui::Context) {
         if !self.confirm_open() {
+            self.modal_opened_frame = None;
             return;
         }
+        // Return confirms only from the frame after the dialog opened: the
+        // Enter that clicked a focused Unload (or the amen link) must not
+        // also confirm it. A frame, not a pass, since the first frame is
+        // redone by `request_discard` below with the same input.
+        let frame = ctx.cumulative_frame_nr();
+        let accept_return = frame > *self.modal_opened_frame.get_or_insert(frame);
         let slot = self.confirm_unload.unwrap_or(0);
         if std::mem::take(&mut self.unload_modal_fresh) {
             // A new area is invisible while it measures itself; redo the
@@ -945,7 +952,7 @@ impl JunglizerUi {
             ui.set_max_width(330.0);
             ui.label(question);
             ui.add_space(10.0);
-            modal_buttons(ui, confirm)
+            modal_buttons(ui, confirm, accept_return)
         });
         match response.inner {
             ModalChoice::Action => self.close_unload_modal(true),
@@ -959,6 +966,7 @@ impl JunglizerUi {
     /// Acts on the dialog's answer: unload the break, load the dropped file
     /// over it, or put the amen back. Cancel leaves everything as it was.
     pub(crate) fn close_unload_modal(&mut self, confirmed: bool) {
+        self.modal_opened_frame = None;
         if std::mem::take(&mut self.confirm_amen) {
             if confirmed {
                 self.restore_amen();
@@ -1012,9 +1020,9 @@ pub(crate) fn modal_button_order(windows: bool) -> [ModalChoice; 2] {
 
 /// The shared confirm row for the Unload, Replace and amen dialogs: a
 /// filled primary action and an outlined Cancel, right-aligned in the
-/// platform's order. Return takes the action; Esc closes the modal, which
-/// the caller reads as Cancel.
-pub(crate) fn modal_buttons(ui: &mut Ui, action: &str) -> ModalChoice {
+/// platform's order. Return takes the action when `accept_return`; Esc
+/// closes the modal, which the caller reads as Cancel.
+pub(crate) fn modal_buttons(ui: &mut Ui, action: &str, accept_return: bool) -> ModalChoice {
     let mut choice = ModalChoice::Open;
     let height = ui.spacing().interact_size.y;
     ui.allocate_ui_with_layout(
@@ -1045,7 +1053,8 @@ pub(crate) fn modal_buttons(ui: &mut Ui, action: &str) -> ModalChoice {
             }
         },
     );
-    if choice == ModalChoice::Open && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+    if choice == ModalChoice::Open && accept_return && ui.input(|i| i.key_pressed(egui::Key::Enter))
+    {
         choice = ModalChoice::Action;
     }
     choice
@@ -1665,6 +1674,41 @@ mod tests {
             DropTarget::Slot(0),
         ));
         ctx
+    }
+
+    fn enter() -> egui::RawInput {
+        egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn return_on_the_frame_a_dialog_opens_does_not_confirm_it() {
+        // Tab to Unload, then Enter: the Enter that clicked it is still
+        // pressed when the dialog first shows. That frame is also redone
+        // by request_discard, which must not let it through either.
+        let mut editor = editor_with_builtin_placement();
+        let before = editor.state.get().clone();
+        editor.confirm_unload = Some(2);
+        editor.unload_modal_fresh = true;
+        let ctx = egui::Context::default();
+        let _ = ctx.run_ui(enter(), |ui| editor.unload_modal(ui.ctx()));
+        assert!(
+            editor.confirm_open(),
+            "the dialog closed on its first frame"
+        );
+        assert!(*editor.state.get() == before, "the state changed");
+        // On a later frame, Return takes the action.
+        let _ = ctx.run_ui(enter(), |ui| editor.unload_modal(ui.ctx()));
+        assert!(!editor.confirm_open());
+        assert_eq!(editor.state.get().slots[2].kind, SlotKind::Blank);
     }
 
     #[test]
