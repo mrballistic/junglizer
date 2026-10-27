@@ -1,17 +1,18 @@
 # Junglizer
 
-> Junglizer is a four-bar break instrument plugin for macOS. You chop four breaks, arrange the slices into an editable 16-beat jungle phrase, and play it in time with your DAW. It ships as AUv2 (Logic Pro, GarageBand), VST3 (Ableton Live, Cubase, Studio One) and CLAP (Bitwig, Reaper) for Apple Silicon and Intel Macs. Version 0.9 beta 1 is free.
+> Junglizer is a four-bar break instrument plugin for macOS, Windows and Linux. You chop four breaks, or load your own,, arrange the slices into an editable 16-beat jungle phrase, and play it in time with your DAW. It ships as AUv2 (Logic Pro, GarageBand), VST3 (Ableton Live, Cubase, Studio One) and CLAP (Bitwig, Reaper) for Apple Silicon and Intel Macs, plus VST3 and CLAP for Windows x86_64 and Linux x86_64. Version 0.9.1 beta 2 is free.
 
-Junglizer is made by Todd Greco (mrballistic). The 174 BPM breaks ship inside the plugin, so there is nothing else to install. The plugin follows the host’s tempo; away from 174 BPM the breaks change speed and pitch to stay on the grid. It makes no network connections and collects no data. Every build is signed and notarized by Apple.
+Junglizer is made by Todd Greco (mrballistic). Junglizer’s own 174 BPM amen ships inside the plugin, so there is nothing else to install. You can load your own WAV, AIFF or MP3 breaks (4 to 32 beats, 80 to 195 BPM, tempo read from the filename when present) into four slots; KAN Samples’ free Amen Break Tribute and Think Break Tribute packs are one source, downloaded from KAN separately and not bundled. The plugin follows the host’s tempo; away from 174 BPM the breaks change speed and pitch to stay on the grid. It makes no network connections and collects no data. The macOS builds are signed and notarized by Apple; the Windows and Linux builds are unsigned, and Linux is beta.
 
 ## Features
 
-- Slice each source break into 1 to 32 slices, drag markers onto the hits, audition, mute and tag bass hits.
+- Load up to four breaks of your own, with Relink for moved files and half/double tempo correction.
+- Slice each source break into 1 to 32 slices (a separate count per break), drag markers onto the hits, audition, mute and tag bass hits.
 - Pick a different break for each of the four bars; until slices are placed, the full break plays underneath as a ghost.
 - Place slices on the player grid with per-slice length, Original or Fit speed, bit depth, retriggers (up to 8×) and locks.
 - Suggested fills per bar, or Live variations for a new phrase every four bars; freeze the one you like.
 - One crossfader from Thin (high-passed) through Dry to Thicc, which layers a decaying 808 on tagged bass hits, down to a sub octave.
-- Export the phrase as a four-bar MIDI file (slice notes, bar sources and controller data) to ~/Music/Junglizer/Exports.
+- Export the phrase as a four-bar MIDI file (slice notes, bar sources and controller data) to Junglizer/Exports in your operating system’s Music folder.
 - Every control is a host automation parameter; phrases, markers, placements and locks are saved with the project.
 
 ## Pages
@@ -19,14 +20,18 @@ Junglizer is made by Todd Greco (mrballistic). The 174 BPM breaks ship inside th
 - [Home](https://getjunglizer.com/): features, how it works, downloads and install steps
 - [Privacy policy](https://getjunglizer.com/privacy/): the plugin collects nothing; the site uses Google Analytics only after consent
 
-## Downloads (0.9 beta 1)
+## Downloads (0.9.1 beta 2)
 
-- [Apple Silicon, AUv2](https://getjunglizer.com/downloads/Junglizer-v0.9.0-beta.1-arm64-component.zip)
-- [Apple Silicon, VST3](https://getjunglizer.com/downloads/Junglizer-v0.9.0-beta.1-arm64-vst3.zip)
-- [Apple Silicon, CLAP](https://getjunglizer.com/downloads/Junglizer-v0.9.0-beta.1-arm64-clap.zip)
-- [Intel, AUv2](https://getjunglizer.com/downloads/Junglizer-v0.9.0-beta.1-x86_64-component.zip)
-- [Intel, VST3](https://getjunglizer.com/downloads/Junglizer-v0.9.0-beta.1-x86_64-vst3.zip)
-- [Intel, CLAP](https://getjunglizer.com/downloads/Junglizer-v0.9.0-beta.1-x86_64-clap.zip)
+- [Apple Silicon, AUv2](https://getjunglizer.com/downloads/Junglizer-v0.9.1-beta.2-arm64-component.zip)
+- [Apple Silicon, VST3](https://getjunglizer.com/downloads/Junglizer-v0.9.1-beta.2-arm64-vst3.zip)
+- [Apple Silicon, CLAP](https://getjunglizer.com/downloads/Junglizer-v0.9.1-beta.2-arm64-clap.zip)
+- [Intel, AUv2](https://getjunglizer.com/downloads/Junglizer-v0.9.1-beta.2-x86_64-component.zip)
+- [Intel, VST3](https://getjunglizer.com/downloads/Junglizer-v0.9.1-beta.2-x86_64-vst3.zip)
+- [Intel, CLAP](https://getjunglizer.com/downloads/Junglizer-v0.9.1-beta.2-x86_64-clap.zip)
+- [Windows x86_64, VST3](https://getjunglizer.com/downloads/Junglizer-v0.9.1-beta.2-windows-x86_64-vst3.zip)
+- [Windows x86_64, CLAP](https://getjunglizer.com/downloads/Junglizer-v0.9.1-beta.2-windows-x86_64-clap.zip)
+- [Linux x86_64, VST3](https://getjunglizer.com/downloads/Junglizer-v0.9.1-beta.2-linux-x86_64-vst3.zip)
+- [Linux x86_64, CLAP](https://getjunglizer.com/downloads/Junglizer-v0.9.1-beta.2-linux-x86_64-clap.zip)
 
 ## Optional
 
