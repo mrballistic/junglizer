@@ -17,7 +17,10 @@ const SUGGESTED_SLICES: u8 = 8;
 pub struct LoadedBreak {
     pub sample: StereoSample,
     pub path_hash: u64,
-    #[allow(dead_code)] // shown by the slot controls (Task 8)
+    /// The request this was decoded for; 0 for the built-ins. A later
+    /// load of the same path has a higher `seq`, so the newest decode of a
+    /// re-bounced file wins.
+    pub seq: u64,
     pub reading: Reading,
     pub suggested: [SliceMarker; MAX_STEPS],
 }
@@ -30,6 +33,7 @@ impl LoadedBreak {
         Self {
             sample,
             path_hash,
+            seq: 0,
             reading,
             suggested,
         }
@@ -183,46 +187,50 @@ impl Library {
     }
 
     /// The latest finished load for `slot` and `purpose`. Locks; editor only.
-    #[allow(dead_code)] // read by the slot controls (Task 8)
     pub fn result(&self, slot: usize, purpose: Purpose) -> Option<SlotResult> {
         let cell = self.inner.results.get(slot)?.get(purpose_index(purpose))?;
         cell.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// A finished load of the file `path_hash` names in `slot`, from either
-    /// purpose, preferring loaded audio. Non-blocking and allocation-free
-    /// (it clones an `Arc`), for the audio thread. `None` means nothing
-    /// for that path has finished, or a result slot was busy.
-    pub fn try_adopt(&self, slot: usize, path_hash: u64) -> Option<LoadOutcome> {
-        let mut found = None;
-        for cell in self.inner.results.get(slot)? {
-            let Ok(guard) = cell.try_lock() else { continue };
-            let Some(result) = guard.as_ref().filter(|r| r.path_hash == path_hash) else {
-                continue;
-            };
-            if let LoadOutcome::Loaded(_) = result.outcome {
-                return Some(result.outcome.clone());
-            }
-            found = Some(result.outcome.clone());
-        }
-        found
+    /// The newest finished load of the file `path_hash` names in `slot`,
+    /// from either purpose, with a `seq` above `newer_than` (pass 0 for
+    /// any). Loaded audio wins over a failure; among loads, the highest
+    /// `seq` wins. Non-blocking and allocation-free, for the audio thread:
+    /// both cells are held with `try_lock` while choosing, and only the
+    /// winner's `Arc` is cloned, so no clone is ever dropped there. `None`
+    /// means nothing newer has finished, or a result slot was busy.
+    pub fn try_adopt(&self, slot: usize, path_hash: u64, newer_than: u64) -> Option<LoadOutcome> {
+        let cells = self.inner.results.get(slot)?;
+        let guards = [cells[0].try_lock().ok(), cells[1].try_lock().ok()];
+        let best = guards
+            .iter()
+            .flatten()
+            .filter_map(|guard| guard.as_ref())
+            .filter(|r| r.path_hash == path_hash && r.seq > newer_than)
+            .max_by_key(|r| (matches!(r.outcome, LoadOutcome::Loaded(_)), r.seq))?;
+        Some(best.outcome.clone())
     }
 
-    /// The loaded audio of the file `path_hash` names in `slot`, if any.
-    /// Locks; editor only.
-    #[allow(dead_code)] // drawn by the editor's waveform (Task 8)
+    /// The newest loaded audio of the file `path_hash` names in `slot`, if
+    /// any. Locks; editor only.
     pub fn audio_for(&self, slot: usize, path_hash: u64) -> Option<Arc<LoadedBreak>> {
-        self.inner.results.get(slot)?.iter().find_map(|cell| {
-            let guard = cell.lock().unwrap_or_else(|e| e.into_inner());
-            match guard.as_ref()? {
-                SlotResult {
-                    path_hash: hash,
-                    outcome: LoadOutcome::Loaded(audio),
-                    ..
-                } if *hash == path_hash => Some(audio.clone()),
-                _ => None,
-            }
-        })
+        self.inner
+            .results
+            .get(slot)?
+            .iter()
+            .filter_map(|cell| {
+                let guard = cell.lock().unwrap_or_else(|e| e.into_inner());
+                match guard.as_ref()? {
+                    SlotResult {
+                        path_hash: hash,
+                        seq,
+                        outcome: LoadOutcome::Loaded(audio),
+                    } if *hash == path_hash => Some((*seq, audio.clone())),
+                    _ => None,
+                }
+            })
+            .max_by_key(|(seq, _)| *seq)
+            .map(|(_, audio)| audio)
     }
 
     /// Hands audio the DSP no longer holds to the loader or editor to free.
@@ -323,14 +331,18 @@ fn path_allowed(path: &str) -> bool {
 }
 
 /// Whether a path from project state may be opened without asking. Stricter
-/// than `path_allowed`; see the comment where it is used for why.
-fn restore_allowed(path: &str) -> bool {
+/// than `path_allowed`; see the comment where it is used for why. The
+/// drive-letter, DOS-device and colon rules apply only when `windows` is
+/// set (`cfg!(windows)` in the loader): elsewhere `Aux`, `nul.wav` and `:`
+/// (how macOS stores a Finder name's `/`) are ordinary names. Namespace,
+/// network and dot-component paths are refused everywhere.
+fn restore_allowed(path: &str, windows: bool) -> bool {
     let bytes = path.as_bytes();
     // A drive letter must start an absolute path (`C:\`, `C:/`). A
     // drive-relative `C:CON` or `C:..\x` would hide its first component
     // from the checks below. Strip `C:` so they see the rest.
     let rest = match bytes {
-        [letter, b':', ..] if letter.is_ascii_alphabetic() => {
+        [letter, b':', ..] if windows && letter.is_ascii_alphabetic() => {
             if !bytes.get(2).is_some_and(|&byte| is_slash(byte)) {
                 return false;
             }
@@ -346,8 +358,8 @@ fn restore_allowed(path: &str) -> bool {
             .as_bytes()
             .split(|&byte| is_slash(byte))
             .any(|part| part == b"." || part == b"..")
-        && !rest.split(['\\', '/']).any(is_dos_device)
-        && !has_stray_colon(bytes)
+        && !(windows && rest.split(['\\', '/']).any(is_dos_device))
+        && !(windows && has_stray_colon(bytes))
 }
 
 /// Whether `path` has a `:` anywhere but right after a leading drive
@@ -451,7 +463,7 @@ fn run_pending(inner: &Inner) {
             let result = SlotResult {
                 seq,
                 path_hash: hash,
-                outcome: load(&path, hash, purpose == Purpose::Restore as usize),
+                outcome: load(&path, hash, seq, purpose == Purpose::Restore as usize),
             };
             // Replacing the old result frees it here, on the loader.
             *inner.results[slot][purpose]
@@ -466,12 +478,12 @@ fn run_pending(inner: &Inner) {
 
 /// Loads one requested file. A panic anywhere in decoding or analysis
 /// becomes `Unreadable` for that request instead of killing the loader.
-fn load(path: &[u8], hash: u64, restore: bool) -> LoadOutcome {
-    std::panic::catch_unwind(|| load_unguarded(path, hash, restore))
+fn load(path: &[u8], hash: u64, seq: u64, restore: bool) -> LoadOutcome {
+    std::panic::catch_unwind(|| load_unguarded(path, hash, seq, restore))
         .unwrap_or(LoadOutcome::Unreadable)
 }
 
-fn load_unguarded(path: &[u8], hash: u64, restore: bool) -> LoadOutcome {
+fn load_unguarded(path: &[u8], hash: u64, seq: u64, restore: bool) -> LoadOutcome {
     let Ok(path) = std::str::from_utf8(path) else {
         return LoadOutcome::Unreadable;
     };
@@ -499,7 +511,7 @@ fn load_unguarded(path: &[u8], hash: u64, restore: bool) -> LoadOutcome {
     // missing and the user can Relink. Choose (a file the user picked in
     // the dialog) is trusted, minus raw devices. Keep these checks before
     // every filesystem call, `metadata` included.
-    if restore && !restore_allowed(path) {
+    if restore && !restore_allowed(path, cfg!(windows)) {
         return LoadOutcome::Missing;
     }
     if !path_allowed(path) {
@@ -522,7 +534,11 @@ fn load_unguarded(path: &[u8], hash: u64, restore: bool) -> LoadOutcome {
     };
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     match read_length(sample.duration_secs(), name) {
-        Ok(reading) => LoadOutcome::Loaded(Arc::new(LoadedBreak::new(sample, hash, reading))),
+        Ok(reading) => {
+            let mut loaded = LoadedBreak::new(sample, hash, reading);
+            loaded.seq = seq;
+            LoadOutcome::Loaded(Arc::new(loaded))
+        }
         Err(refusal) => LoadOutcome::Refused(refusal),
     }
 }
@@ -623,17 +639,43 @@ mod tests {
         let path = fixture("loop_160_4beats_mono16_48k.wav");
         let bytes = path.to_str().unwrap().as_bytes();
         let hash = path_hash(bytes);
-        assert!(lib.try_adopt(0, hash).is_none());
+        assert!(lib.try_adopt(0, hash, 0).is_none());
         lib.request(0, bytes, Purpose::Restore).unwrap();
         lib.run_pending();
-        assert!(lib.try_adopt(0, hash ^ 1).is_none());
-        assert!(lib.try_adopt(1, hash).is_none());
-        let Some(LoadOutcome::Loaded(b)) = lib.try_adopt(0, hash) else {
+        assert!(lib.try_adopt(0, hash ^ 1, 0).is_none());
+        assert!(lib.try_adopt(1, hash, 0).is_none());
+        let Some(LoadOutcome::Loaded(b)) = lib.try_adopt(0, hash, 0) else {
             panic!("not adopted")
         };
         assert_eq!(b.path_hash, hash);
         assert!(Arc::ptr_eq(&b, &lib.audio_for(0, hash).unwrap()));
         assert!(lib.audio_for(0, hash ^ 1).is_none());
+    }
+
+    #[test]
+    fn the_newest_load_of_a_path_wins_whichever_purpose_made_it() {
+        let lib = Library::default();
+        let path = fixture("loop_160_4beats_mono16_48k.wav");
+        let bytes = path.to_str().unwrap().as_bytes();
+        let hash = path_hash(bytes);
+        lib.request(0, bytes, Purpose::Choose).unwrap();
+        lib.run_pending();
+        let restore = lib.request(0, bytes, Purpose::Restore).unwrap();
+        lib.run_pending();
+        let choose = lib.request(0, bytes, Purpose::Choose).unwrap();
+        lib.run_pending();
+        assert!(choose > restore);
+        let Some(LoadOutcome::Loaded(adopted)) = lib.try_adopt(0, hash, 0) else {
+            panic!("not adopted")
+        };
+        assert_eq!(adopted.seq, choose);
+        assert!(Arc::ptr_eq(&adopted, &lib.audio_for(0, hash).unwrap()));
+        // Nothing newer than what the DSP already holds.
+        assert!(lib.try_adopt(0, hash, choose).is_none());
+        assert!(matches!(
+            lib.try_adopt(0, hash, restore),
+            Some(LoadOutcome::Loaded(b)) if b.seq == choose
+        ));
     }
 
     #[test]
@@ -652,7 +694,7 @@ mod tests {
             outcome: LoadOutcome::Missing,
         });
         assert!(matches!(
-            lib.try_adopt(0, path_hash(bytes)),
+            lib.try_adopt(0, path_hash(bytes), 0),
             Some(LoadOutcome::Loaded(_))
         ));
     }
@@ -793,14 +835,14 @@ mod tests {
     #[test]
     fn restore_refuses_drive_relative_paths() {
         for refused in ["C:CON", "C:nul.wav", "C:x.wav", "C:", r"c:..\x.wav"] {
-            assert!(!restore_allowed(refused), "{refused}");
+            assert!(!restore_allowed(refused, true), "{refused}");
         }
         for allowed in [r"C:\a.wav", "C:/a.wav", r"c:\Breaks\x.wav"] {
-            assert!(restore_allowed(allowed), "{allowed}");
+            assert!(restore_allowed(allowed, true), "{allowed}");
         }
         // The rest after `C:\` gets the device and dot checks.
-        assert!(!restore_allowed(r"C:\CON"));
-        assert!(!restore_allowed(r"C:\..\x.wav"));
+        assert!(!restore_allowed(r"C:\CON", true));
+        assert!(!restore_allowed(r"C:\..\x.wav", true));
         // Choose is unchanged.
         assert!(path_allowed("C:CON"));
     }
@@ -817,10 +859,10 @@ mod tests {
             "CON:x.wav",
             ":x.wav",
         ] {
-            assert!(!restore_allowed(refused), "{refused}");
+            assert!(!restore_allowed(refused, true), "{refused}");
         }
         for allowed in [r"C:\Breaks\a.wav", r"c:\a.wav", "/Users/a/b.wav"] {
-            assert!(restore_allowed(allowed), "{allowed}");
+            assert!(restore_allowed(allowed, true), "{allowed}");
         }
         // Choose is unchanged: the user picked the file.
         assert!(path_allowed(r"C:\x\a.wav:evil"));
@@ -847,7 +889,7 @@ mod tests {
             r"C:\Breaks\NUL. .wav",
             r"C:\Breaks\nul.tar.wav",
         ] {
-            assert!(!restore_allowed(refused), "{refused}");
+            assert!(!restore_allowed(refused, true), "{refused}");
             assert!(path_allowed(refused), "Choose still takes {refused}");
         }
         for allowed in [
@@ -859,7 +901,7 @@ mod tests {
             "/x/.wav",
             "C:\\Breaks\\COM\u{b4}.wav",
         ] {
-            assert!(restore_allowed(allowed), "{allowed}");
+            assert!(restore_allowed(allowed, true), "{allowed}");
         }
     }
 
@@ -885,7 +927,7 @@ mod tests {
             r"\\srv\share\loop 174.wav",
             "//srv/share/a.wav",
         ] {
-            assert!(!restore_allowed(refused), "{refused}");
+            assert!(!restore_allowed(refused, true), "{refused}");
         }
         for allowed in [
             r"C:\Breaks\amen 174.wav",
@@ -894,7 +936,7 @@ mod tests {
             "/Users/todd/a..b/x.wav",
             "/Users/todd/.breaks/a.wav",
         ] {
-            assert!(restore_allowed(allowed), "{allowed}");
+            assert!(restore_allowed(allowed, true), "{allowed}");
         }
         // The user picked these in the dialog, so Choose still takes them.
         for chosen in [
@@ -993,6 +1035,64 @@ mod tests {
             lib.result(1, Purpose::Choose).unwrap().outcome,
             LoadOutcome::Loaded(_)
         ));
+    }
+
+    #[test]
+    fn the_windows_only_restore_rules_are_off_elsewhere() {
+        for allowed in [
+            "/Users/a/Break 12:30.wav",
+            "/x/aux.wav",
+            "/x/Con/nul.wav",
+            "/x/COM1:",
+        ] {
+            assert!(restore_allowed(allowed, false), "{allowed}");
+            assert!(!restore_allowed(allowed, true), "{allowed}");
+        }
+        // Namespaces, shares and dot components are refused everywhere.
+        for refused in [
+            r"\\?\C:\breaks\a.wav",
+            "//?/C:/a.wav",
+            r"\\.\COM1",
+            r"\??\C:\a.wav",
+            r"\\srv\share\a.wav",
+            "//srv/share/a.wav",
+            "/Users/a/../b.wav",
+            "/Users/a/./b.wav",
+        ] {
+            assert!(!restore_allowed(refused, false), "{refused}");
+        }
+    }
+
+    #[test]
+    fn restore_opens_colon_and_device_like_names_where_they_are_just_names() {
+        // On macOS a Finder name with "/" is stored with ":", and Aux, Con
+        // or nul.wav are ordinary names. Only Windows gives them meaning.
+        let lib = Library::default();
+        let dir = temp_path("names");
+        std::fs::create_dir_all(dir.join("Aux")).unwrap();
+        let source = fixture("loop_160_4beats_mono16_48k.wav");
+        let names = ["Break 12:30.wav", "nul.wav", "Aux/con.wav"];
+        for name in names {
+            std::fs::copy(&source, dir.join(name)).unwrap();
+        }
+        let outcomes: Vec<_> = names
+            .iter()
+            .map(|name| {
+                let path = dir.join(name);
+                lib.request(0, path.to_str().unwrap().as_bytes(), Purpose::Restore)
+                    .unwrap();
+                lib.run_pending();
+                lib.result(0, Purpose::Restore).unwrap().outcome
+            })
+            .collect();
+        std::fs::remove_dir_all(&dir).unwrap();
+        for (name, outcome) in names.iter().zip(outcomes) {
+            if cfg!(windows) {
+                assert!(matches!(outcome, LoadOutcome::Missing), "{name}");
+            } else {
+                assert!(matches!(outcome, LoadOutcome::Loaded(_)), "{name}");
+            }
+        }
     }
 
     #[test]

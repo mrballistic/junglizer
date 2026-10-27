@@ -44,6 +44,8 @@ pub struct JunglizerUi {
     unload_modal_fresh: bool,
     /// A dropped file waiting on the unload dialog to replace a user break.
     replace_with: Option<PathBuf>,
+    /// The empty state's amen link is waiting on the confirm dialog.
+    confirm_amen: bool,
     /// This frame's drop targets, registered during layout.
     drop_targets: Vec<(Rect, ui_slots::DropTarget)>,
     /// The first-launch prompt is showing.
@@ -70,6 +72,7 @@ impl JunglizerUi {
             confirm_unload: None,
             unload_modal_fresh: false,
             replace_with: None,
+            confirm_amen: false,
             drop_targets: Vec::new(),
             first_run: false,
             selected_loop: 0,
@@ -1030,10 +1033,10 @@ impl EditorUi<JunglizerParams> for JunglizerUi {
                                 crate::platform::reveal(path);
                             }
                         }
-                        let full = path.as_ref().map(|p| p.display().to_string());
                         let response = ui.add(egui::Label::new(egui::RichText::new(message).color(ACCENT)).truncate());
-                        match full {
-                            Some(full) => { response.on_hover_text(full); }
+                        // The whole message, then the full export path under it.
+                        match path {
+                            Some(path) => { response.on_hover_text(format!("{message}\n{}", path.display())); }
                             None => { response.on_hover_text(message); }
                         }
                     });

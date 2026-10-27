@@ -57,7 +57,7 @@ fn fixture(
     }
     if !matches!(
         name,
-        "ghost-stopped" | "missing-samples" | "first-run" | "empty"
+        "ghost-stopped" | "missing-samples" | "first-run" | "empty" | "amen-modal"
     ) {
         editor.state.update(|s| {
             for (slot, source, slice, length) in [
@@ -204,6 +204,25 @@ fn fixture(
         editor.unload_modal_fresh = true;
         editor.replace_with = Some(PathBuf::from("/Users/me/Breaks/think break 174.wav"));
     }
+    if name == "amen-modal" {
+        // The empty state with Break 2 missing: the amen link asks first.
+        let path = "/Volumes/Old Drive/Breaks/think break 174.wav";
+        let suggested = Library::builtin()[1].suggested;
+        editor.state.update(|s| {
+            for slot in [0, 2, 3] {
+                s.unload(slot);
+            }
+            s.load_user(1, path, 60_828, 4, &suggested[..8]).unwrap();
+        });
+        params
+            .library
+            .request(1, path.as_bytes(), Purpose::Restore)
+            .unwrap();
+        params.library.run_pending();
+        editor.refresh_slot_audio();
+        editor.use_builtin_amen();
+        assert!(editor.confirm_amen);
+    }
     if name == "missing" {
         // A user break whose file is gone: the restore reports Missing.
         let path = "/Volumes/Old Drive/Breaks/think break 174.wav";
@@ -270,12 +289,7 @@ fn choose(
     mode: ui_slots::LoadMode,
 ) {
     editor.params = Some(params.clone());
-    editor.pending = PendingLoad::Choosing {
-        slot,
-        seq: 0,
-        path: path.to_owned(),
-        mode,
-    };
+    editor.load_path(slot, PathBuf::from(path), mode);
     editor.poll_pending_load(&egui::Context::default());
     params.library.run_pending();
     editor.poll_pending_load(&egui::Context::default());
@@ -283,13 +297,69 @@ fn choose(
 }
 
 #[test]
+fn reloading_a_rebounced_file_at_the_same_path_plays_and_draws_the_new_audio() {
+    // Re-bounce `same 174.wav` over itself, then Replace it at the same
+    // path: the DSP and the editor both move to the new decode.
+    let params = Arc::new(JunglizerParams::default());
+    let mut editor = JunglizerUi::new();
+    editor.params = Some(params.clone());
+    let path = std::env::temp_dir().join(format!("junglizer-{}-same 174.wav", std::process::id()));
+    let path_str = path.to_str().unwrap().to_owned();
+    let builtin = &Library::builtin()[0].sample;
+    let one_bar = StereoSample {
+        frames: builtin.frames.clone(),
+        sample_rate: builtin.sample_rate,
+    };
+    write_wav(&path, &one_bar);
+    choose(&mut editor, &params, 1, &path_str, ui_slots::LoadMode::Load);
+    let mut dsp = crate::Junglizer::load_sources();
+    dsp.edit = editor.state.get().clone();
+    dsp.reconcile_sources(&params.library);
+    params.library.run_pending();
+    dsp.reconcile_sources(&params.library);
+    let old_len = one_bar.frames.len();
+    assert_eq!(
+        dsp.sources[1].as_ref().unwrap().sample.frames.len(),
+        old_len
+    );
+    assert_eq!(editor.slot_audio[1].sample().unwrap().frames.len(), old_len);
+
+    let four = four_bars();
+    write_wav(&path, &four);
+    choose(&mut editor, &params, 1, &path_str, ui_slots::LoadMode::Load);
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(
+        editor.slot_audio[1].sample().unwrap().frames.len(),
+        four.frames.len(),
+        "editor"
+    );
+    dsp.edit = editor.state.get().clone();
+    dsp.reconcile_sources(&params.library);
+    assert_eq!(
+        dsp.sources[1].as_ref().unwrap().sample.frames.len(),
+        four.frames.len(),
+        "DSP"
+    );
+    // A later refresh keeps the new decode rather than an older one.
+    editor.refresh_slot_audio();
+    assert_eq!(
+        editor.slot_audio[1].sample().unwrap().frames.len(),
+        four.frames.len()
+    );
+}
+
+#[test]
 #[ignore = "writes review PNGs using the desktop GPU"]
 fn render_editor_states() {
-    let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join(".impeccable/review");
+    // JUNGLIZER_RENDER_DIR (default .impeccable/review) is where the PNGs
+    // go, JUNGLIZER_RENDER_SCALE (default 1) sets pixels-per-point and
+    // JUNGLIZER_RENDER_ONLY renders one named state. They exist so
+    // tools/screenshots/render_site_screenshot.sh can make a 2x image
+    // without overwriting the tracked review fixtures.
+    let directory = std::env::var_os("JUNGLIZER_RENDER_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join(".impeccable/review"));
     std::fs::create_dir_all(&directory).unwrap();
-    // JUNGLIZER_RENDER_SCALE (default 1) sets pixels-per-point and
-    // JUNGLIZER_RENDER_ONLY renders one named state; both exist so
-    // tools/screenshots/render_site_screenshot.sh can make a 2x image.
     let scale: f64 = std::env::var("JUNGLIZER_RENDER_SCALE")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -318,6 +388,7 @@ fn render_editor_states() {
         "unload-modal-replace",
         "first-run",
         "empty",
+        "amen-modal",
     ] {
         if only.as_deref().is_some_and(|o| o != name) {
             continue;
