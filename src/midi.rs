@@ -76,7 +76,7 @@ pub fn build_midi(pattern: &EditState, bars: [u8; 4], thin_thicc: f32, root: u8)
     }
     events.sort_by_key(|event| (event.tick, event.priority));
     let mut track = Vec::with_capacity(events.len() * 5 + 64);
-    // A track name helps distinguish the file in Logic's import browser.
+    // A track name helps distinguish the file in a DAW's import browser.
     track.extend_from_slice(&[0, 0xff, 0x03, 0x09]);
     track.extend_from_slice(b"Junglizer");
     let mut previous_tick = 0;
@@ -106,10 +106,8 @@ pub fn export_to_music(
     thin_thicc: f32,
     root: u8,
 ) -> io::Result<PathBuf> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "home folder"))?;
-    let directory = home.join("Music/Junglizer/Exports");
+    let directory = crate::platform::export_dir()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "music folder"))?;
     fs::create_dir_all(&directory)?;
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

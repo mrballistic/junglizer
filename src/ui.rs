@@ -810,7 +810,7 @@ impl JunglizerUi {
     fn freeze_live(&mut self, context: &PluginContext<JunglizerParams>) -> bool {
         let Some(captured) = context.params().live_snapshot.capture() else {
             self.message =
-                "Start Logic playback to hear a live variation before freezing it.".into();
+                "Start playback in your DAW to hear a live variation before freezing it.".into();
             return false;
         };
         self.state.update(|state| {
@@ -848,24 +848,39 @@ impl JunglizerUi {
             context.params().root.value() as u8,
         ) {
             Ok(path) => {
-                let _ = std::process::Command::new("open")
-                    .arg("-R")
-                    .arg(&path)
-                    .spawn();
-                self.export_path = Some(path);
-                self.message = if self.state.get().frozen {
-                    "MIDI saved to ~/Music/Junglizer/Exports; phrase frozen. Drag to this Logic track, then choose MIDI region."
-                } else {
-                    "MIDI saved to ~/Music/Junglizer/Exports. Drag to this Logic track, then choose MIDI region."
+                if cfg!(target_os = "macos") {
+                    crate::platform::reveal(&path);
                 }
+                self.export_path = Some(path);
+                let frozen = if self.state.get().frozen {
+                    "; phrase frozen"
+                } else {
+                    ""
+                };
+                self.message = format!(
+                    "MIDI saved to {}{frozen}. Drag it onto this track, then choose MIDI region.",
+                    export_dir_label()
+                )
                 .into();
             }
             Err(_) => {
                 self.export_path = None;
-                self.message = "Could not save MIDI. Check write access to ~/Music/Junglizer/Exports and try again.".into();
+                self.message = format!(
+                    "Couldn’t save MIDI. Check write access to {} and try again.",
+                    export_dir_label()
+                )
+                .into();
             }
         }
     }
+}
+
+/// The export folder as shown in messages and tooltips.
+fn export_dir_label() -> String {
+    crate::platform::export_dir().map_or_else(
+        || "your Music folder".to_owned(),
+        |dir| dir.display().to_string(),
+    )
 }
 
 impl EditorUi<JunglizerParams> for JunglizerUi {
@@ -966,7 +981,12 @@ impl EditorUi<JunglizerParams> for JunglizerUi {
                         else if initial && self.state.get().live_enabled { "A new phrase every four bars. Freeze the one you want to keep." }
                         else { &self.message };
                     let response = ui.colored_label(ACCENT, message);
-                    if let Some(path) = &self.export_path { response.on_hover_text(path.display().to_string()); }
+                    if let Some(path) = self.export_path.clone() {
+                        response.on_hover_text(path.display().to_string());
+                        if ui.small_button(crate::platform::REVEAL_LABEL).clicked() {
+                            crate::platform::reveal(&path);
+                        }
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(egui::RichText::new(CREDIT).small().color(MUTED));
                     });
@@ -1646,12 +1666,28 @@ impl JunglizerUi {
             }
         });
         ui.horizontal(|ui| {
-            if ui.add(egui::Button::new(egui::RichText::new("Export MIDI to Finder").color(WELL).strong()).fill(ACCENT)).on_hover_text("Save four bars to ~/Music/Junglizer/Exports. Live variations are frozen before export.").clicked() { self.export_midi(context); }
-            ui.separator(); ui.label("Playback");
+            if ui
+                .add(
+                    egui::Button::new(egui::RichText::new("Export MIDI").color(WELL).strong())
+                        .fill(ACCENT),
+                )
+                .on_hover_text(format!(
+                    "Save four bars to {}. Live variations are frozen before export.",
+                    export_dir_label()
+                ))
+                .clicked()
+            {
+                self.export_midi(context);
+            }
+            ui.separator();
+            ui.label("Playback");
             let midi = context.params().playback.value() != 0;
-            if ui.selectable_label(!midi, "Internal").clicked() { context.automate(P::Playback, 0.0); }
-            if ui.selectable_label(midi, "MIDI region").clicked() { context.automate(P::Playback, 1.0); }
-
+            if ui.selectable_label(!midi, "Internal").clicked() {
+                context.automate(P::Playback, 0.0);
+            }
+            if ui.selectable_label(midi, "MIDI region").clicked() {
+                context.automate(P::Playback, 1.0);
+            }
         });
     }
 }

@@ -155,11 +155,11 @@ fn fixture(
         editor.export_path = Some(PathBuf::from(
             "~/Music/Junglizer/Exports/junglizer-example.mid",
         ));
-        editor.message = "MIDI saved to ~/Music/Junglizer/Exports. Drag to this Logic track, then choose MIDI region.".into();
+        editor.message = "MIDI saved to ~/Music/Junglizer/Exports. Drag it onto this track, then choose MIDI region.".into();
     }
     if name == "export-failure" {
         editor.message =
-            "Could not save MIDI. Check write access to ~/Music/Junglizer/Exports and try again."
+            "Couldn’t save MIDI. Check write access to ~/Music/Junglizer/Exports and try again."
                 .into();
     }
     if name == "user-16-beats" {
