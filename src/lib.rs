@@ -118,7 +118,7 @@ pub struct Junglizer {
     /// later block; never dropped on the audio thread.
     overflow: [Option<Arc<LoadedBreak>>; 8],
     /// The path hash of the last `Restore` posted per slot, so a slot asks
-    /// once per path.
+    /// once per path per project load.
     requested: [u64; LOOP_COUNT],
     /// The built-in breaks' suggested marker sets for every slice count,
     /// computed once in `load_sources`.
@@ -382,8 +382,10 @@ impl Junglizer {
                         Some(LoadOutcome::Loaded(audio)) => self.sources[slot] = Some(audio),
                         // Missing, unreadable or refused: stay silent so the
                         // bar falls back, and keep the markers for Relink.
-                        Some(_) => {}
-                        None if self.requested[slot] != hash => {
+                        // A Missing from before the last project load is
+                        // stale, though: the drive may be back, so ask again
+                        // (`load_state` clears `requested`).
+                        Some(LoadOutcome::Missing) | None if self.requested[slot] != hash => {
                             let Some(path) = self.edit.slots[slot].path() else {
                                 continue;
                             };
@@ -394,7 +396,7 @@ impl Junglizer {
                                 self.requested[slot] = hash;
                             }
                         }
-                        None => {}
+                        Some(_) | None => {}
                     }
                 }
             }
@@ -1052,6 +1054,9 @@ impl PluginLogic for Junglizer {
             }
         }
         state.edit = edit;
+        // Ask the library again for every user break, so a file that was
+        // missing before this load gets another try.
+        state.requested = [0; LOOP_COUNT];
         state.live_version = 0;
         state.midi.player_slots = state.edit.player_slots;
         state.controls = None;
@@ -1374,6 +1379,38 @@ mod audio_tests {
         assert!(st.sources[0].is_none());
         assert_eq!(st.ghost_source(&st.edit, 0), Some(1));
         assert!(st.edit.marker_set(0).unwrap().valid); // markers kept for Relink
+    }
+
+    #[test]
+    fn a_missing_file_is_retried_after_the_project_reloads() {
+        let params = JunglizerParams::default();
+        let lib = &params.library;
+        let mut st = Junglizer::load_sources();
+        let path =
+            std::env::temp_dir().join(format!("junglizer-{}-relink.wav", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let path_str = path.to_str().unwrap();
+        st.edit.load_user(0, path_str, 72_000, 4, &WHOLE).unwrap();
+        st.reconcile_sources(lib);
+        lib.run_pending();
+        st.reconcile_sources(lib);
+        assert!(st.sources[0].is_none(), "missing");
+        std::fs::copy(fixture("loop_160_4beats_mono16_48k.wav"), &path).unwrap();
+        // Without a reload, Missing stays final: nothing is re-requested.
+        st.reconcile_sources(lib);
+        lib.run_pending();
+        st.reconcile_sources(lib);
+        assert!(st.sources[0].is_none(), "no retry without a reload");
+        // Reopening the project asks again and finds the file.
+        let mut blob = Vec::new();
+        st.edit.serialize_into(&mut blob);
+        Junglizer::load_state(&mut st, &blob).unwrap();
+        st.reconcile_sources(lib);
+        lib.run_pending();
+        st.reconcile_sources(lib);
+        std::fs::remove_file(&path).unwrap();
+        let held = st.sources[0].as_ref().expect("adopted after reload");
+        assert_eq!(held.path_hash, st.edit.slots[0].path_hash());
     }
 
     #[test]

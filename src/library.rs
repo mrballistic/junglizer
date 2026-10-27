@@ -1,10 +1,10 @@
 //! Decoded breaks, ready for the audio thread. Built off the audio thread and
 //! handed over behind an `Arc`.
 
-use crate::decode::{DecodeError, decode_file};
+use crate::decode::{DecodeError, decode_file_capped};
 use crate::edit_state::{LOOP_COUNT, MAX_PATH_BYTES, MAX_STEPS, SliceMarker, path_hash};
 use crate::sample::StereoSample;
-use crate::tempo::{Reading, Refusal, read_length};
+use crate::tempo::{MAX_BREAK_SECS, Reading, Refusal, read_length};
 use crossbeam_queue::ArrayQueue;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -228,7 +228,12 @@ impl Library {
     /// Hands audio the DSP no longer holds to the loader or editor to free.
     /// Gives it back if the queue is full.
     pub fn retire(&self, old: Arc<LoadedBreak>) -> Result<(), Arc<LoadedBreak>> {
-        self.inner.retired.push(old)
+        self.inner.retired.push(old)?;
+        // Wake the loader to free it now rather than at the next request.
+        if let Some(thread) = self.inner.loader.get() {
+            thread.unpark();
+        }
+        Ok(())
     }
 
     /// The loader body: takes every new request, decodes it and publishes
@@ -255,6 +260,32 @@ impl Library {
                 Arc::new(LoadedBreak::new(sample, 0, BUILTIN_READING))
             })
         })
+    }
+}
+
+/// A path that makes the guarded load panic, to test the loader survives.
+#[cfg(test)]
+const PANIC_FOR_TESTS: &str = "/junglizer/panic-for-tests.wav";
+
+/// Whether the loader may open `path` at all. Windows device namespaces
+/// (`\\.\…`, `\\?\GLOBALROOT\…`) reach raw disks and ports, so they are
+/// refused, as is the NT `\??\` prefix. UNC shares (`\\server\share\…`) and long-path prefixes are fine.
+fn path_allowed(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    // `\??\` is the NT object-manager prefix, another way to a device.
+    if bytes.starts_with(b"\\??\\") {
+        return false;
+    }
+    let slash = |b: u8| b == b'\\' || b == b'/';
+    if bytes.len() < 4 || !(slash(bytes[0]) && slash(bytes[1]) && slash(bytes[3])) {
+        return true;
+    }
+    match bytes[2] {
+        b'.' => false,
+        b'?' => !bytes[4..]
+            .get(..10)
+            .is_some_and(|word| word.eq_ignore_ascii_case(b"GLOBALROOT")),
+        _ => true,
     }
 }
 
@@ -306,14 +337,38 @@ fn run_pending(inner: &Inner) {
     }
 }
 
+/// Loads one requested file. A panic anywhere in decoding or analysis
+/// becomes `Unreadable` for that request instead of killing the loader.
 fn load(path: &[u8], hash: u64) -> LoadOutcome {
+    std::panic::catch_unwind(|| load_unguarded(path, hash)).unwrap_or(LoadOutcome::Unreadable)
+}
+
+fn load_unguarded(path: &[u8], hash: u64) -> LoadOutcome {
     let Ok(path) = std::str::from_utf8(path) else {
         return LoadOutcome::Unreadable;
     };
+    #[cfg(test)]
+    if path == PANIC_FOR_TESTS {
+        panic!("a load that panics, for tests");
+    }
+    // Project paths are opened without asking, so only ever open a plain
+    // file: never a device, a pipe or a directory.
+    if !path_allowed(path) {
+        return LoadOutcome::Unreadable;
+    }
     let path = Path::new(path);
-    let sample = match decode_file(path) {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_file() => {}
+        Ok(_) => return LoadOutcome::Unreadable,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return LoadOutcome::Missing;
+        }
+        Err(_) => return LoadOutcome::Unreadable,
+    }
+    let sample = match decode_file_capped(path, Some(MAX_BREAK_SECS)) {
         Ok(sample) => sample,
         Err(DecodeError::Missing) => return LoadOutcome::Missing,
+        Err(DecodeError::TooLong) => return LoadOutcome::Refused(Refusal::TooLong),
         Err(DecodeError::Unreadable | DecodeError::Empty) => return LoadOutcome::Unreadable,
     };
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -477,6 +532,138 @@ mod tests {
         assert!(b.iter().all(|x| !x.sample.frames.is_empty()));
         assert!(b.iter().all(|x| x.path_hash == 0 && x.reading.beats == 4));
         assert!(Arc::ptr_eq(&b[0], &Library::builtin()[0]));
+    }
+
+    fn temp_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("junglizer-{}-{name}", std::process::id()))
+    }
+
+    fn write_wav(path: &Path, secs: u32) {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 8_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(path, spec).unwrap();
+        for i in 0..secs * 8_000 {
+            w.write_sample(((i % 200) as i16 - 100) * 100).unwrap();
+        }
+        w.finalize().unwrap();
+    }
+
+    fn outcome_of(lib: &Library, path: &[u8]) -> LoadOutcome {
+        lib.request(0, path, Purpose::Choose).unwrap();
+        lib.run_pending();
+        lib.result(0, Purpose::Choose).unwrap().outcome
+    }
+
+    #[test]
+    fn a_file_longer_than_any_break_is_refused_as_too_long() {
+        let lib = Library::default();
+        let path = temp_path("long.wav");
+        write_wav(&path, 25);
+        let outcome = outcome_of(&lib, path.to_str().unwrap().as_bytes());
+        std::fs::remove_file(&path).unwrap();
+        assert!(matches!(outcome, LoadOutcome::Refused(Refusal::TooLong)));
+    }
+
+    #[test]
+    fn a_declared_hour_is_refused_without_decoding_it() {
+        // 1.5 s of audio whose header claims an hour.
+        let mut bytes = std::fs::read(fixture("loop_160_4beats_mono16_48k.wav")).unwrap();
+        let data = bytes.windows(4).position(|w| w == b"data").unwrap();
+        let hour = 48_000_u32 * 2 * 3_600;
+        bytes[4..8].copy_from_slice(&u32::MAX.to_le_bytes()); // RIFF size unknown
+        bytes[data + 4..data + 8].copy_from_slice(&hour.to_le_bytes());
+        let path = temp_path("hour.wav");
+        std::fs::write(&path, &bytes).unwrap();
+        let lib = Library::default();
+        let outcome = outcome_of(&lib, path.to_str().unwrap().as_bytes());
+        std::fs::remove_file(&path).unwrap();
+        assert!(matches!(outcome, LoadOutcome::Refused(Refusal::TooLong)));
+    }
+
+    #[test]
+    fn only_regular_files_are_opened() {
+        let lib = Library::default();
+        let dir = fixture("");
+        assert!(matches!(
+            outcome_of(&lib, dir.to_str().unwrap().as_bytes()),
+            LoadOutcome::Unreadable
+        ));
+    }
+
+    #[test]
+    fn windows_device_paths_are_refused_and_shares_allowed() {
+        for bad in [
+            r"\\.\PhysicalDrive0",
+            r"\\.\COM1",
+            r"\\?\GLOBALROOT\Device\Harddisk0\Partition1\a.wav",
+            r"\\?\globalroot\device\a.wav",
+            "//./PhysicalDrive0",
+            "//?/GlobalRoot/Device/a.wav",
+            r"\??\GLOBALROOT\Device\a.wav",
+        ] {
+            assert!(!path_allowed(bad), "{bad}");
+        }
+        for good in [
+            r"\\server\share\breaks\amen.wav",
+            r"C:\Users\todd\amen.wav",
+            r"\\?\C:\very\long\amen.wav",
+            "/Users/todd/amen.wav",
+            "/home/todd/.breaks/amen.wav",
+        ] {
+            assert!(path_allowed(good), "{good}");
+        }
+        let lib = Library::default();
+        assert!(matches!(
+            outcome_of(&lib, br"\\.\PhysicalDrive0"),
+            LoadOutcome::Unreadable
+        ));
+    }
+
+    #[test]
+    fn a_panicking_load_is_unreadable_and_the_loader_carries_on() {
+        let lib = Library::default();
+        assert!(matches!(
+            outcome_of(&lib, PANIC_FOR_TESTS.as_bytes()),
+            LoadOutcome::Unreadable
+        ));
+        let path = fixture("loop_160_4beats_mono16_48k.wav");
+        assert!(matches!(
+            outcome_of(&lib, path.to_str().unwrap().as_bytes()),
+            LoadOutcome::Loaded(_)
+        ));
+    }
+
+    #[test]
+    fn retiring_wakes_the_loader_to_free_it() {
+        let lib = Library::default();
+        lib.start();
+        let sample = StereoSample {
+            frames: vec![[0.0; 2]; 16],
+            sample_rate: 44_100,
+        };
+        let b = Arc::new(LoadedBreak::new(sample, 7, BUILTIN_READING));
+        // Let the loader finish a request and go back to sleep first.
+        let path = fixture("loop_160_4beats_mono16_48k.wav");
+        let seq = lib
+            .request(0, path.to_str().unwrap().as_bytes(), Purpose::Choose)
+            .unwrap();
+        while lib.result(0, Purpose::Choose).is_none_or(|r| r.seq != seq) {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(lib.retire(b.clone()).is_ok());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while Arc::strong_count(&b) > 1 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "loader never freed it"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     #[test]
