@@ -240,6 +240,21 @@ fn fixture(
         params.set_normalized(P::EditBreak.into(), 1.0 / 3.0);
         params.set_normalized(P::EditSlice.into(), 0.0);
     }
+    if name == "blocked-slot" {
+        // A user break on a network share: the restore refuses to open it.
+        let path = "//studio-nas/Breaks/think break 174.wav";
+        let suggested = Library::builtin()[1].suggested;
+        editor.state.update(|s| {
+            s.load_user(1, path, 60_828, 4, &suggested[..8]).unwrap();
+        });
+        params
+            .library
+            .request(1, path.as_bytes(), Purpose::Restore)
+            .unwrap();
+        params.library.run_pending();
+        params.set_normalized(P::EditBreak.into(), 1.0 / 3.0);
+        params.set_normalized(P::EditSlice.into(), 0.0);
+    }
     if name == "first-run" {
         editor.first_run = true;
     }
@@ -399,6 +414,7 @@ fn render_editor_states() {
         "user-16-beats",
         "blank-slot",
         "missing",
+        "blocked-slot",
         "unload-modal",
         "unload-modal-replace",
         "first-run",
@@ -525,6 +541,61 @@ fn a_missing_restore_shows_as_missing() {
     editor.refresh_slot_audio();
     assert_eq!(editor.slot_status(1), ui_slots::SlotStatus::Missing);
     assert_eq!(editor.slot_status(0), ui_slots::SlotStatus::Builtin);
+}
+
+#[test]
+fn a_blocked_restore_shows_as_not_opened_and_offers_relink() {
+    let (mut editor, params, ctx) = fixture("blocked-slot");
+    editor.refresh_slot_audio();
+    assert_eq!(editor.slot_status(1), ui_slots::SlotStatus::Blocked);
+    let notice = editor.waveform_notice(1).unwrap();
+    assert!(notice.contains("network or system locations"), "{notice}");
+    assert!(notice.contains("Relink…"), "{notice}");
+    // The slot row shows “Not opened” and a Relink… button.
+    let texts = rendered_texts(&mut editor, &ctx);
+    let _ = params;
+    assert!(texts.iter().any(|t| t == "Not opened"), "{texts:?}");
+    assert!(texts.iter().any(|t| t == "Relink…"), "{texts:?}");
+    assert!(!texts.iter().any(|t| t == "Missing"), "{texts:?}");
+}
+
+/// Every piece of text one headless frame of the editor paints.
+fn rendered_texts(editor: &mut JunglizerUi, ctx: &PluginContext<JunglizerParams>) -> Vec<String> {
+    fn collect(shape: &egui::Shape, out: &mut Vec<String>) {
+        match shape {
+            egui::Shape::Text(text) => out.push(text.galley.text().to_owned()),
+            egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| collect(s, out)),
+            _ => {}
+        }
+    }
+    let egui_ctx = egui::Context::default();
+    let input = || egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(1100.0, 720.0),
+        )),
+        ..Default::default()
+    };
+    let mut run = || egui_ctx.run_ui(input(), |root| editor.ui(root, ctx));
+    let _ = run();
+    let output = run();
+    let mut texts = Vec::new();
+    for clipped in &output.shapes {
+        collect(&clipped.shape, &mut texts);
+    }
+    texts
+}
+
+#[test]
+fn a_blocked_break_alone_counts_as_empty() {
+    let (mut editor, _, _) = fixture("blocked-slot");
+    editor.state.update(|s| {
+        for slot in [0, 2, 3] {
+            s.unload(slot);
+        }
+    });
+    editor.refresh_slot_audio();
+    assert!(editor.no_playable_break());
 }
 
 #[test]

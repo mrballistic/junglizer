@@ -52,6 +52,11 @@ pub enum LoadOutcome {
     Refused(Refusal),
     Unreadable,
     Missing,
+    /// A Restore path `restore_allowed` refused (a network share, an
+    /// automount root or alias, a device or namespace path…). The file may
+    /// well exist; it was deliberately not touched. Shown and played like
+    /// `Missing`, but explained differently.
+    Blocked,
 }
 
 #[derive(Clone)]
@@ -367,8 +372,11 @@ impl Host {
 /// - Linux: `/net`, `/misc` and gvfs under `/run/user/<uid>` or
 ///   `/var/run/user/<uid>`, matched exactly. Also `/proc` and `/dev/fd`,
 ///   whose entries (`/proc/self/root`, `/dev/fd/3`) lead into other roots.
-/// - macOS also refuses those roots one level under any `/Volumes/<name>`,
-///   because the boot volume appears there as a symlink to `/`.
+/// - macOS strips the `/System/Volumes/Data`, `/private` and
+///   `/Volumes/<name>` aliases (the boot volume appears under `/Volumes`
+///   as a symlink to `/`) repeatedly, at most `MAX_ALIASES` times, before
+///   matching the roots. It fails closed: any non-ASCII component it
+///   compares, alias or root, refuses the path.
 fn is_automount(components: &[&[u8]], host: Host) -> bool {
     match host {
         Host::MacOs => {
@@ -378,32 +386,56 @@ fn is_automount(components: &[&[u8]], host: Host) -> bool {
                 part.is_ascii()
                     .then(|| part.eq_ignore_ascii_case(name.as_bytes()))
             };
-            for (index, name) in ["System", "Volumes", "Data"].iter().enumerate() {
-                match parts.get(index).map(|part| matches(part, name)) {
-                    Some(None) => return true,
-                    Some(Some(true)) => {}
-                    _ => break,
+            // Strip alias prefixes until none is left. Each pass removes at
+            // least one component; a path still aliasing after
+            // `MAX_ALIASES` passes is refused rather than walked further.
+            const MAX_ALIASES: usize = 8;
+            let mut settled = false;
+            for _ in 0..MAX_ALIASES {
+                let Some(first) = parts.first() else {
+                    return false;
+                };
+                let step = if let Some(is) = matches(first, "System") {
+                    if is {
+                        // `System/Volumes/Data`, comparing each component.
+                        let mut whole = true;
+                        for (index, name) in [(1, "Volumes"), (2, "Data")] {
+                            match parts.get(index).map(|part| matches(part, name)) {
+                                Some(None) => return true,
+                                Some(Some(true)) => {}
+                                _ => whole = false,
+                            }
+                            if !whole {
+                                break;
+                            }
+                        }
+                        if whole { 3 } else { 0 }
+                    } else if matches(first, "private") == Some(true) {
+                        1
+                    } else if matches(first, "Volumes") == Some(true) && parts.len() >= 2 {
+                        // The boot volume is also a symlink at `/Volumes/<name>`.
+                        2
+                    } else {
+                        0
+                    }
+                } else {
+                    // Non-ASCII: it might fold to an alias or a root.
+                    return true;
+                };
+                if step == 0 {
+                    settled = true;
+                    break;
                 }
-                if index == 2 {
-                    parts = &parts[3..];
-                }
+                parts = &parts[step..];
             }
-            match parts.first().map(|part| matches(part, "private")) {
-                Some(None) => return true,
-                Some(Some(true)) => parts = &parts[1..],
-                _ => {}
+            if !settled {
+                return true;
             }
-            let root = |part: &[u8]| {
+            parts.first().is_some_and(|first| {
                 ["net", "Network", "home"]
                     .iter()
-                    .any(|root| matches(part, root) != Some(false))
-            };
-            match parts {
-                [first, ..] if root(first) => true,
-                // The boot volume is also a symlink at `/Volumes/<name>`.
-                [volumes, _, third, ..] if matches(volumes, "Volumes") == Some(true) => root(third),
-                _ => false,
-            }
+                    .any(|root| matches(first, root) != Some(false))
+            })
         }
         Host::Linux => {
             let gvfs = |parts: &[&[u8]]| {
@@ -625,12 +657,12 @@ fn load_unguarded(path: &[u8], hash: u64, seq: u64, restore: bool) -> LoadOutcom
     // - Never a `:` except after a leading drive letter: Windows also ends a
     //   device name at `:` (`C:\Breaks\nul:stream`), and a later `:`
     //   names an NTFS alternate data stream.
-    // Our own dialog never saves such paths. A refused path shows as
-    // missing and the user can Relink. Choose (a file the user picked in
+    // Our own dialog never saves such paths. A refused path is reported as
+    // Blocked (shown as "Not opened") and the user can Relink. Choose (a file the user picked in
     // the dialog) is trusted, minus raw devices. Keep these checks before
     // every filesystem call, `metadata` included.
     if restore && !restore_allowed(path, Host::CURRENT) {
-        return LoadOutcome::Missing;
+        return LoadOutcome::Blocked;
     }
     if !path_allowed(path) {
         return LoadOutcome::Unreadable;
@@ -1068,7 +1100,7 @@ mod tests {
     }
 
     #[test]
-    fn restore_publishes_missing_for_a_dotted_path_that_choose_opens() {
+    fn restore_blocks_a_dotted_path_that_choose_opens() {
         let lib = Library::default();
         let fixture_path = fixture("loop_160_4beats_mono16_48k.wav");
         let dir = fixture_path.parent().unwrap();
@@ -1085,7 +1117,7 @@ mod tests {
         lib.run_pending();
         assert!(matches!(
             lib.result(0, Purpose::Restore).unwrap().outcome,
-            LoadOutcome::Missing
+            LoadOutcome::Blocked
         ));
         assert!(matches!(
             lib.result(0, Purpose::Choose).unwrap().outcome,
@@ -1093,7 +1125,7 @@ mod tests {
         ));
         assert!(matches!(
             lib.result(1, Purpose::Restore).unwrap().outcome,
-            LoadOutcome::Missing
+            LoadOutcome::Blocked
         ));
         assert!(matches!(
             lib.result(1, Purpose::Choose).unwrap().outcome,
@@ -1134,7 +1166,7 @@ mod tests {
         lib.run_pending();
         assert!(matches!(
             lib.result(0, Purpose::Restore).unwrap().outcome,
-            LoadOutcome::Missing
+            LoadOutcome::Blocked
         ));
         // A real local file spelled with a leading `//`: POSIX resolves it
         // like `/`, but the rule counts it as remote. Restore refuses it
@@ -1147,7 +1179,7 @@ mod tests {
         lib.run_pending();
         assert!(matches!(
             lib.result(1, Purpose::Restore).unwrap().outcome,
-            LoadOutcome::Missing
+            LoadOutcome::Blocked
         ));
         assert!(matches!(
             lib.result(1, Purpose::Choose).unwrap().outcome,
@@ -1311,6 +1343,38 @@ mod tests {
                 );
             }
         }
+        // Aliases chain in any order, and every compared component fails
+        // closed on non-ASCII, the `Volumes` one included.
+        for refused in [
+            "/Volumes/Macintosh HD/System/Volumes/Data/net/x.wav",
+            "/private/Volumes/X/net/x.wav",
+            "/Volumes/A/Volumes/B/private/home/x.wav",
+            // Any drive name might be the boot volume, so this counts too.
+            "/Volumes/Samples/private/net/x.wav",
+            "/System/Volumes/Data/private/Volumes/Macintosh HD/Network/x.wav",
+            "/Vol\u{fc}mes/Macintosh HD/net/x.wav",
+            "/private/Vol\u{fc}mes/X/net/x.wav",
+            "/Volumes/X/Caf\u{e9}/a.wav",
+            "/System/Volum\u{e9}s/Data/net/x.wav",
+            // More than eight alias hops: refused rather than walked.
+            "/private/private/private/private/private/private/private/private/private/a.wav",
+        ] {
+            assert!(!restore_allowed(refused, Host::MacOs), "{refused}");
+            for host in [Host::Linux, Host::Windows, Host::Other] {
+                assert!(
+                    !refused.is_ascii() || restore_allowed(refused, host),
+                    "{refused} on {host:?}"
+                );
+            }
+        }
+        for allowed in [
+            "/private/Volumes/Samples/Breaks/x.wav",
+            "/Volumes/Samples",
+            "/Volumes",
+            "/private/private/private/private/private/private/private/a.wav",
+        ] {
+            assert!(restore_allowed(allowed, Host::MacOs), "{allowed}");
+        }
         // External sample drives and look-alikes stay allowed everywhere.
         for allowed in [
             "/Volumes/Samples/Breaks/x.wav",
@@ -1363,7 +1427,7 @@ mod tests {
     }
 
     #[test]
-    fn restore_publishes_missing_for_an_automount_path_on_this_host() {
+    fn restore_blocks_an_automount_path_on_this_host() {
         if !matches!(Host::CURRENT, Host::MacOs | Host::Linux) {
             return;
         }
@@ -1374,7 +1438,7 @@ mod tests {
         lib.run_pending();
         assert!(matches!(
             lib.result(0, Purpose::Restore).unwrap().outcome,
-            LoadOutcome::Missing
+            LoadOutcome::Blocked
         ));
     }
 
