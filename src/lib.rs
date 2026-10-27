@@ -6,6 +6,7 @@ mod midi;
 pub mod pattern;
 mod sample;
 mod suggest;
+pub mod tempo;
 mod tone;
 mod ui;
 
