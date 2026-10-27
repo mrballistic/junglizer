@@ -333,6 +333,52 @@ fn restore_allowed(path: &str) -> bool {
         && !bytes
             .split(|&byte| is_slash(byte))
             .any(|part| part == b"." || part == b"..")
+        && !path.split(['\\', '/']).any(is_dos_device)
+}
+
+/// Whether a path component names a reserved DOS device on Windows
+/// (`COM1`, `nul.wav`, `Lpt1 .wav`, `CONIN$`…). Opening one, even just to
+/// stat it, opens the device: a serial or parallel port, or a driver that
+/// can stall. The base name is the part before the first `.`, with
+/// trailing spaces and dots trimmed, compared ignoring ASCII case.
+fn is_dos_device(component: &str) -> bool {
+    const NAMES: [&str; 32] = [
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        "CONIN$",
+        "CONOUT$",
+        "COM0",
+        "COM1",
+        "COM2",
+        "COM3",
+        "COM4",
+        "COM5",
+        "COM6",
+        "COM7",
+        "COM8",
+        "COM9",
+        "COM\u{b9}",
+        "COM\u{b2}",
+        "COM\u{b3}",
+        "LPT0",
+        "LPT1",
+        "LPT2",
+        "LPT3",
+        "LPT4",
+        "LPT5",
+        "LPT6",
+        "LPT7",
+        "LPT8",
+        "LPT9",
+        "LPT\u{b9}",
+        "LPT\u{b2}",
+        "LPT\u{b3}",
+    ];
+    let base = component.split('.').next().unwrap_or("");
+    let base = base.trim_end_matches([' ', '.']);
+    NAMES.iter().any(|name| base.eq_ignore_ascii_case(name))
 }
 
 /// Whether `path` names a network location: `\\server\…`, `//server/…`
@@ -419,6 +465,9 @@ fn load_unguarded(path: &[u8], hash: u64, restore: bool) -> LoadOutcome {
     //   into UNC or device space, e.g. `//?/C:/../../UNC/srv/share/x.wav`;
     //   no string allowlist can be trusted there.
     // - Never a path with a `.` or `..` component, for the same reason.
+    // - Never a reserved DOS device name in any component (`C:\Breaks\COM1`,
+    //   `nul.wav`): `metadata` would open the port or driver before
+    //   `is_file` could reject it.
     // Our own dialog never saves such paths. A refused path shows as
     // missing and the user can Relink. Choose (a file the user picked in
     // the dialog) is trusted, minus raw devices. Keep these checks before
@@ -712,6 +761,40 @@ mod tests {
             outcome_of(&lib, br"\\.\PhysicalDrive0"),
             LoadOutcome::Unreadable
         ));
+    }
+
+    #[test]
+    fn restore_refuses_dos_device_names_in_any_component() {
+        for refused in [
+            r"C:\Breaks\COM1",
+            r"C:\Breaks\nul.wav",
+            r"C:\Breaks\Lpt1 .wav",
+            "/x/CONIN$",
+            r"C:\a\CON\x.wav",
+            r"C:\Breaks\conout$.wav",
+            r"C:\Breaks\PRN",
+            r"C:\Breaks\aux.wav",
+            r"C:\Breaks\COM0.wav",
+            r"C:\Breaks\lpt9.wav",
+            "C:\\Breaks\\COM\u{b9}.wav",
+            "/x/lpt\u{b3}",
+            r"C:\Breaks\NUL. .wav",
+            r"C:\Breaks\nul.tar.wav",
+        ] {
+            assert!(!restore_allowed(refused), "{refused}");
+            assert!(path_allowed(refused), "Choose still takes {refused}");
+        }
+        for allowed in [
+            r"C:\Breaks\Console.wav",
+            r"C:\Breaks\COM10.wav",
+            r"C:\Breaks\null.wav",
+            "/x/auxiliary.wav",
+            r"C:\Breaks\COM.wav",
+            "/x/.wav",
+            "C:\\Breaks\\COM\u{b4}.wav",
+        ] {
+            assert!(restore_allowed(allowed), "{allowed}");
+        }
     }
 
     #[test]
