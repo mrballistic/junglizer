@@ -42,6 +42,10 @@ pub struct JunglizerUi {
     select_after_load: Option<usize>,
     confirm_unload: Option<usize>,
     unload_modal_fresh: bool,
+    /// A dropped file waiting on the unload dialog to replace a user break.
+    replace_with: Option<PathBuf>,
+    /// This frame's drop targets, registered during layout.
+    drop_targets: Vec<(Rect, ui_slots::DropTarget)>,
     /// The first-launch prompt is showing.
     first_run: bool,
     selected_loop: usize,
@@ -65,6 +69,8 @@ impl JunglizerUi {
             select_after_load: None,
             confirm_unload: None,
             unload_modal_fresh: false,
+            replace_with: None,
+            drop_targets: Vec::new(),
             first_run: false,
             selected_loop: 0,
             selected_slice: 0,
@@ -160,6 +166,8 @@ impl JunglizerUi {
             self.break_target(ui, rect);
             return;
         }
+        self.drop_targets
+            .push((rect, ui_slots::DropTarget::Waveform));
         let middle = rect.center().y;
         for (bin, amplitude) in self.slot_audio[self.selected_loop].peaks.iter().enumerate() {
             if *amplitude <= 0.0 {
@@ -945,6 +953,10 @@ impl EditorUi<JunglizerParams> for JunglizerUi {
         }
         self.poll_pending_load(ui.ctx());
         self.refresh_slot_audio();
+        self.drop_targets.clear();
+        let (hovered_files, dropped_files) = ui
+            .ctx()
+            .input(|i| (i.raw.hovered_files.clone(), i.raw.dropped_files.clone()));
         self.selected_loop = (context.params().edit_break.value() as usize - 1).min(3);
         self.selected_slice = (context.params().edit_slice.value() as usize - 1)
             .min(self.state.get().slice_count(self.selected_loop) as usize - 1);
@@ -1029,6 +1041,7 @@ impl EditorUi<JunglizerParams> for JunglizerUi {
 
             });
         });
+        self.handle_file_drop(ui.ctx(), &hovered_files, &dropped_files);
         self.unload_modal(ui.ctx());
     }
 }

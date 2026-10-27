@@ -7,7 +7,7 @@ use crate::sample::StereoSample;
 use crate::tempo::{self, Reading};
 use crate::{JunglizerParams, JunglizerParamsParamId as P};
 use egui::{Pos2, Rect, Sense, Stroke, Ui, vec2};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use truce::prelude::PluginContext;
@@ -15,9 +15,17 @@ use truce::prelude::PluginContext;
 /// Shown on every break control that's disabled while frozen or live.
 pub(crate) const LOCKED_HINT: &str = "Unfreeze or stop live variations to change breaks.";
 const UNREADABLE: &str = "Junglizer couldn’t read that file. Use a WAV, AIFF or MP3.";
-const TARGET_PROMPT: &str = "Choose your own break (4 to 32 beats, 80–195 BPM)";
+const TARGET_PROMPT: &str = if DROP_SUPPORTED {
+    "Drop your own break here (4 to 32 beats, 80–195 BPM)"
+} else {
+    "Choose your own break (4 to 32 beats, 80–195 BPM)"
+};
+/// Shown when nothing in a drop is a file type Junglizer reads.
+const NOT_AUDIO: &str = "Junglizer can load WAV, AIFF or MP3 files.";
 const FREE_PACKS: &str = "Need breaks? Free packs from KAN Samples";
 const FREE_PACKS_URL: &str = "https://kansamples.com/blogs/free-drum-and-bass-sample-packs";
+/// The file types Junglizer decodes, for the dialog filter and drops.
+const AUDIO_EXTENSIONS: &[&str] = &["wav", "aif", "aiff", "mp3"];
 /// How many suggested markers a fresh load starts with.
 const LOAD_SLICES: usize = 8;
 
@@ -39,6 +47,19 @@ pub(crate) enum PendingLoad {
         path: String,
         mode: LoadMode,
     },
+}
+
+/// Where a file drop can land. Each frame's layout registers the rects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DropTarget {
+    /// The first-launch prompt: a FirstRun load into Break 1.
+    FirstRun,
+    /// The empty state: Break 1.
+    Empty,
+    /// The source waveform: the selected slot.
+    Waveform,
+    /// A Break 1–4 button.
+    Slot(usize),
 }
 
 /// What the editor knows about one slot's audio.
@@ -104,6 +125,24 @@ pub(crate) fn file_name(path: &str) -> &str {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(path)
+}
+
+/// Drag and drop needs baseview's drop support, which exists on macOS and
+/// Windows only. Linux keeps click to choose.
+pub(crate) const DROP_SUPPORTED: bool = cfg!(any(target_os = "macos", target_os = "windows"));
+
+/// The first dropped file with an audio extension Junglizer reads (wav,
+/// aif, aiff or mp3, any case).
+pub(crate) fn accepted_drop(files: &[egui::DroppedFile]) -> Option<PathBuf> {
+    files
+        .iter()
+        .filter_map(|f| f.path.as_ref())
+        .find_map(|path| {
+            let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+            AUDIO_EXTENSIONS
+                .contains(&extension.as_str())
+                .then(|| path.clone())
+        })
 }
 
 /// Whether to show the first-launch prompt: only when this machine hasn't
@@ -257,12 +296,23 @@ impl JunglizerUi {
             return;
         }
         let Some(picked) = rfd::FileDialog::new()
-            .add_filter("Audio", &["wav", "aif", "aiff", "mp3"])
+            .add_filter("Audio", AUDIO_EXTENSIONS)
             .pick_file()
         else {
             return;
         };
-        let Some(path) = picked.to_str() else {
+        self.load_path(slot, picked, mode);
+    }
+
+    /// Asks the library to load `path` into `slot`. Shared by the file
+    /// dialog and drops, so both refuse, report and handle the first-run
+    /// prompt the same way.
+    pub(crate) fn load_path(&mut self, slot: usize, path: PathBuf, mode: LoadMode) {
+        if !self.breaks_editable() {
+            self.message = LOCKED_HINT.into();
+            return;
+        }
+        let Ok(path) = path.into_os_string().into_string() else {
             self.message = UNREADABLE.into();
             return;
         };
@@ -273,10 +323,82 @@ impl JunglizerUi {
         self.pending = PendingLoad::Choosing {
             slot,
             seq: 0,
-            path: path.to_owned(),
+            path,
             mode,
         };
         self.post_pending();
+    }
+
+    /// Loads the first audio file in a drop on `target`.
+    pub(crate) fn drop_files(&mut self, target: DropTarget, files: &[egui::DroppedFile]) {
+        if !self.breaks_editable() {
+            self.message = LOCKED_HINT.into();
+            return;
+        }
+        let Some(path) = accepted_drop(files) else {
+            self.message = NOT_AUDIO.into();
+            return;
+        };
+        match target {
+            DropTarget::FirstRun => self.load_path(0, path, LoadMode::FirstRun),
+            DropTarget::Empty => self.drop_into_slot(0, path),
+            DropTarget::Waveform => self.drop_into_slot(self.selected_loop, path),
+            DropTarget::Slot(slot) => self.drop_into_slot(slot, path),
+        }
+    }
+
+    /// A missing or unreadable break is relinked, so its slices and
+    /// placements survive. A user break asks first, through the unload
+    /// dialog, because the new file replaces its slices and placements.
+    fn drop_into_slot(&mut self, slot: usize, path: PathBuf) {
+        match self.slot_status(slot) {
+            SlotStatus::Missing | SlotStatus::Unreadable => {
+                self.load_path(slot, path, LoadMode::Relink);
+            }
+            SlotStatus::Ready(_) | SlotStatus::Loading => {
+                self.confirm_unload = Some(slot);
+                self.unload_modal_fresh = true;
+                self.replace_with = Some(path);
+            }
+            SlotStatus::Builtin | SlotStatus::Blank => self.load_path(slot, path, LoadMode::Load),
+        }
+    }
+
+    /// Outlines the drop target under the pointer while files hover, and
+    /// loads a drop that lands on one. Call once per frame, after layout
+    /// has registered this frame's targets.
+    pub(crate) fn handle_file_drop(
+        &mut self,
+        ctx: &egui::Context,
+        hovered: &[egui::HoveredFile],
+        dropped: &[egui::DroppedFile],
+    ) {
+        // The unload dialog is modal: nothing under it takes a drop.
+        if (hovered.is_empty() && dropped.is_empty()) || self.confirm_unload.is_some() {
+            return;
+        }
+        let Some(pos) = ctx.input(|i| i.pointer.latest_pos()) else {
+            return;
+        };
+        let Some(&(rect, target)) = self
+            .drop_targets
+            .iter()
+            .rev()
+            .find(|(rect, _)| rect.contains(pos))
+        else {
+            return;
+        };
+        if !hovered.is_empty() {
+            let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("drop-target"));
+            dashed_rect(
+                &ctx.layer_painter(layer),
+                rect.expand(2.0),
+                Stroke::new(2.0_f32, ACCENT),
+            );
+        }
+        if !dropped.is_empty() {
+            self.drop_files(target, dropped);
+        }
     }
 
     /// Sends the pending request if the library hasn't taken it yet.
@@ -395,15 +517,21 @@ impl JunglizerUi {
             };
             let button = egui::Button::new(text).selected(self.selected_loop == i);
             let response = if blank {
-                ui.add_enabled(editable, button)
-                    .on_hover_text(format!(
+                let hint = if DROP_SUPPORTED {
+                    "Click to choose a break, or drop a WAV, AIFF or MP3 here.".to_owned()
+                } else {
+                    format!(
                         "Break {} is empty. Click to choose a WAV, AIFF or MP3.",
                         i + 1
-                    ))
+                    )
+                };
+                ui.add_enabled(editable, button)
+                    .on_hover_text(hint)
                     .on_disabled_hover_text(LOCKED_HINT)
             } else {
                 ui.add(button)
             };
+            self.drop_targets.push((response.rect, DropTarget::Slot(i)));
             if response.clicked() {
                 self.select_break(i, context);
                 if blank {
@@ -429,6 +557,7 @@ impl JunglizerUi {
         {
             self.confirm_unload = Some(slot);
             self.unload_modal_fresh = true;
+            self.replace_with = None;
         }
         let path = self.state.get().slots[slot]
             .path()
@@ -566,20 +695,13 @@ impl JunglizerUi {
     /// The dashed target drawn in place of the source waveform: the
     /// first-launch prompt, or the empty state when no slot can sound.
     pub(crate) fn break_target(&mut self, ui: &mut Ui, rect: Rect) {
-        let outline = rect.shrink(1.5);
-        let corners = [
-            outline.left_top(),
-            outline.right_top(),
-            outline.right_bottom(),
-            outline.left_bottom(),
-            outline.left_top(),
-        ];
-        ui.painter().extend(egui::Shape::dashed_line(
-            &corners,
-            Stroke::new(1.5_f32, ACCENT),
-            7.0,
-            5.0,
-        ));
+        let target = if self.first_run {
+            DropTarget::FirstRun
+        } else {
+            DropTarget::Empty
+        };
+        self.drop_targets.push((rect, target));
+        dashed_rect(ui.painter(), rect.shrink(1.5), Stroke::new(1.5_f32, ACCENT));
         let center = rect.center().x;
         ui.painter().text(
             Pos2::new(center, rect.top() + 24.0),
@@ -699,6 +821,12 @@ impl JunglizerUi {
         match response.inner {
             Some(true) => {
                 self.confirm_unload = None;
+                // A file dropped on a user break replaces it. The old break
+                // goes only if the new one loads.
+                if let Some(path) = self.replace_with.take() {
+                    self.load_path(slot, path, LoadMode::Load);
+                    return;
+                }
                 if !self.breaks_editable() {
                     self.message = LOCKED_HINT.into();
                     return;
@@ -710,11 +838,29 @@ impl JunglizerUi {
                     self.message = format!("Break {} unloaded.", slot + 1).into();
                 }
             }
-            Some(false) => self.confirm_unload = None,
-            None if response.should_close() => self.confirm_unload = None,
+            Some(false) => {
+                self.confirm_unload = None;
+                self.replace_with = None;
+            }
+            None if response.should_close() => {
+                self.confirm_unload = None;
+                self.replace_with = None;
+            }
             None => {}
         }
     }
+}
+
+/// A dashed rectangle outline, as the break target draws it.
+fn dashed_rect(painter: &egui::Painter, rect: Rect, stroke: Stroke) {
+    let corners = [
+        rect.left_top(),
+        rect.right_top(),
+        rect.right_bottom(),
+        rect.left_bottom(),
+        rect.left_top(),
+    ];
+    painter.extend(egui::Shape::dashed_line(&corners, stroke, 7.0, 5.0));
 }
 
 fn text_width(ui: &Ui, text: &str, size: f32) -> f32 {
@@ -964,6 +1110,124 @@ mod tests {
             state.slots[1..].iter().map(|s| s.kind).collect::<Vec<_>>(),
             [SlotKind::Builtin; 3]
         );
+    }
+
+    #[test]
+    fn only_supported_audio_files_are_accepted_from_a_drop() {
+        let f = |p: &str| egui::DroppedFile {
+            path: Some(PathBuf::from(p)),
+            ..Default::default()
+        };
+        assert_eq!(
+            accepted_drop(&[f("/a/notes.txt"), f("/a/Think 114.AIF")]),
+            Some(PathBuf::from("/a/Think 114.AIF"))
+        );
+        assert_eq!(
+            accepted_drop(&[f("C:\\Breaks\\amen.MP3")]),
+            Some(PathBuf::from("C:\\Breaks\\amen.MP3"))
+        );
+        assert_eq!(
+            accepted_drop(&[f("/a/clip.flac"), egui::DroppedFile::default()]),
+            None
+        );
+    }
+
+    fn dropped(path: &str) -> [egui::DroppedFile; 1] {
+        [egui::DroppedFile {
+            path: Some(PathBuf::from(path)),
+            ..Default::default()
+        }]
+    }
+
+    fn pending_load(editor: &JunglizerUi) -> Option<(usize, &str, LoadMode)> {
+        match &editor.pending {
+            PendingLoad::None => None,
+            PendingLoad::Choosing {
+                slot, path, mode, ..
+            } => Some((*slot, path.as_str(), *mode)),
+        }
+    }
+
+    #[test]
+    fn a_drop_on_the_first_run_target_is_a_first_run_load_into_break_one() {
+        let mut editor = JunglizerUi::new();
+        editor.first_run = true;
+        editor.drop_files(DropTarget::FirstRun, &dropped("/x/mine 174.wav"));
+        assert_eq!(
+            pending_load(&editor),
+            Some((0, "/x/mine 174.wav", LoadMode::FirstRun))
+        );
+    }
+
+    #[test]
+    fn a_drop_on_a_break_button_loads_into_that_slot() {
+        let mut editor = JunglizerUi::new();
+        editor.drop_files(DropTarget::Slot(2), &dropped("/x/b.aiff"));
+        assert_eq!(
+            pending_load(&editor),
+            Some((2, "/x/b.aiff", LoadMode::Load))
+        );
+        // The waveform targets the selected slot.
+        editor.selected_loop = 3;
+        editor.drop_files(DropTarget::Waveform, &dropped("/x/c.mp3"));
+        assert_eq!(pending_load(&editor), Some((3, "/x/c.mp3", LoadMode::Load)));
+    }
+
+    #[test]
+    fn a_drop_on_a_user_break_asks_first_and_replaces_it_only_on_unload() {
+        let mut editor = JunglizerUi::new();
+        let suggested = Library::builtin()[1].suggested;
+        editor.state.update(|s| {
+            s.load_user(1, "/x/old.wav", 60_828, 4, &suggested[..8])
+                .unwrap();
+        });
+        editor.slot_audio[1] = SlotAudio::new(
+            (SlotKind::User, editor.state.get().slots[1].path_hash()),
+            Some(Library::builtin()[1].clone()),
+        );
+        editor.drop_files(DropTarget::Slot(1), &dropped("/x/new.wav"));
+        assert_eq!(editor.confirm_unload, Some(1));
+        assert_eq!(editor.replace_with, Some(PathBuf::from("/x/new.wav")));
+        assert!(pending_load(&editor).is_none());
+        // A second drop while the dialog is up is ignored.
+        editor.handle_file_drop(&egui::Context::default(), &[], &dropped("/x/other.wav"));
+        assert_eq!(editor.replace_with, Some(PathBuf::from("/x/new.wav")));
+    }
+
+    #[test]
+    fn a_drop_on_a_missing_break_relinks_it() {
+        let mut editor = JunglizerUi::new();
+        editor.params = Some(Arc::new(crate::JunglizerParams::default()));
+        let suggested = Library::builtin()[1].suggested;
+        let path = "/Volumes/Gone/think.wav";
+        editor.state.update(|s| {
+            s.load_user(1, path, 60_828, 4, &suggested[..8]).unwrap();
+        });
+        let library = &editor.params.as_ref().unwrap().library;
+        library
+            .request(1, path.as_bytes(), Purpose::Restore)
+            .unwrap();
+        library.run_pending();
+        editor.refresh_slot_audio();
+        assert_eq!(editor.slot_status(1), SlotStatus::Missing);
+        editor.drop_files(DropTarget::Slot(1), &dropped("/x/found.wav"));
+        assert_eq!(
+            pending_load(&editor),
+            Some((1, "/x/found.wav", LoadMode::Relink))
+        );
+        assert_eq!(editor.confirm_unload, None);
+    }
+
+    #[test]
+    fn a_drop_with_no_audio_file_or_while_locked_only_explains() {
+        let mut editor = JunglizerUi::new();
+        editor.drop_files(DropTarget::Slot(0), &dropped("/x/notes.txt"));
+        assert_eq!(editor.message, NOT_AUDIO);
+        assert!(pending_load(&editor).is_none());
+        editor.state.update(|s| s.frozen = true);
+        editor.drop_files(DropTarget::Slot(0), &dropped("/x/a.wav"));
+        assert_eq!(editor.message, LOCKED_HINT);
+        assert!(pending_load(&editor).is_none());
     }
 
     #[test]
