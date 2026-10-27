@@ -61,14 +61,13 @@ fn fixture(
     ) {
         editor.state.update(|s| {
             // (slot, source, slice, length, mode, repeats): Fit or retriggers
-            // make short slices fill their span; the locked one at slot 10
-            // already does.
+            // make every placement fill its span.
             for (slot, source, slice, length, mode, repeats) in [
                 (0, 0, 0, 3, 1, 1),
-                (5, 1, 2, 1, 0, 1),
-                (10, 2, 3, 2, 0, 1),
+                (5, 1, 2, 1, 1, 1),
+                (10, 2, 3, 2, 1, 1),
                 (24, 3, 5, 2, 0, 2),
-                (28, 0, 6, 1, 0, 1),
+                (28, 0, 6, 1, 1, 1),
                 (30, 1, 1, 2, 0, 2),
             ] {
                 assert!(s.place(StepPlacement {
