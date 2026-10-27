@@ -103,7 +103,7 @@ there's never an empty instrument.
 
 **First launch, once per machine** (Todd: “only the first time”). This is layout C from the
 mockups. There's no modal: the source waveform area turns into a dashed, lime-outlined drop
-target, with the player dimmed below. It reads “Drop your own break here (8 to 32 beats, 80–195 BPM)” (Todd: state the BPM range in the drop UI) and
+target, with the player dimmed below. It reads “Drop your own break here (4 to 32 beats, 80–195 BPM)” (Todd: state the BPM range in the drop UI) and
 has two buttons, **Choose…** and **Keep the amen**.
 
 - **Keep the amen** dismisses the prompt.
@@ -140,11 +140,12 @@ has two buttons, **Choose…** and **Keep the amen**.
 compatibility. Don't use aubio, which is GPL-3 and would force Junglizer's license.
 
 **Length** (Todd: refuse anything outside the range):
-- **Accepted range (Todd):** a whole number of bars from 8 to 32 beats (2 to 8 bars), at
-  **80 to 195 BPM**. Todd first said 199 as the ceiling, then wrote 80–195 for the drop UI; the
+- **Accepted range (Todd):** a whole number of bars from 4 to 32 beats (1 to 8 bars), at
+  **80 to 195 BPM**. Todd lowered the minimum from 8 beats to 4 after the loop test (one-bar
+  cuts were being refused). Todd first said 199 as the ceiling, then wrote 80–195 for the drop UI; the
   design uses 195 throughout so the rule matches what the UI promises.
 - **Tempo rule (Todd):** always assume the fastest tempo that fits. For each whole-bar beat count
-  from 8 to 32 (8, 12, …, 32), compute BPM = beats × 60 / duration, and take the largest BPM that's
+  from 4 to 32 (4, 8, …, 32), compute BPM = beats × 60 / duration, and take the largest BPM that's
   195 or below. Accept it if it's 80 or above.
 - **Refusal:** if no whole-bar count lands in 80–195 BPM, refuse the file with a short, specific
   message (too short, too long, or not a whole number of bars), and leave the slot unchanged.
@@ -157,7 +158,7 @@ compatibility. Don't use aubio, which is GPL-3 and would force Junglizer's licen
 **Half/double** (Todd: a half/double control when the guess is wrong):
 - A small control on each loaded slot shows the reading, e.g. “16 beats · 174 BPM”.
 - Halve or double toggles between 8 beats at 87 and 16 beats at 174, and so on. A choice that
-  would leave 8–32 beats or 80–195 BPM is unavailable.
+  would leave 4–32 beats or 80–195 BPM is unavailable.
 - It changes only how the break is counted, never the audio.
 - The choice is saved in the project.
 
@@ -184,7 +185,7 @@ old state.
 
 ## Engine changes longer breaks need
 
-Today each source is one bar. A user break is 2 to 8 bars.
+Today each source is one bar. A user break is 1 to 8 bars.
 
 - **Slicing, per slot (Todd):** each slot has its own slice count (1 to 32), and its markers span
   the whole break, however long it is. The existing Source Slices control sets the selected
@@ -194,7 +195,7 @@ Today each source is one bar. A user break is 2 to 8 bars.
 - **Ghost playback** (my call; Todd only specified looping slot 1):
   - Until slices are placed, a bar plays its source break continuously, aligned to the
     phrase start and looping at the break's length.
-  - So an 8-beat break plays twice across the four bars.
+  - So a 4-beat break plays in every bar, and an 8-beat break plays twice across the four bars.
   - A break of 16 beats or more plays its first 16 beats, then repeats each phrase.
 - Built-in amen slots stay one bar each, with no behavior change.
 
