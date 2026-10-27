@@ -297,21 +297,42 @@ fn is_unc_path(rest: &[u8]) -> bool {
         if [*u, *n, *c].eq_ignore_ascii_case(b"UNC") && is_slash(*slash))
 }
 
-/// Whether the loader may open `path` at all. Windows device namespaces
-/// reach raw disks, volumes and ports, so the `\\?\` namespace is an
-/// allowlist: only `\\?\<letter>:\…` and `\\?\UNC\…`. `\\.\…` and the NT
-/// `\??\` prefix are always refused. Plain and UNC paths are allowed here;
-/// `is_remote` decides whether a restore may open a share.
+/// The NT object-manager prefix `\??\`, with either slash.
+fn is_nt_prefix(path: &[u8]) -> bool {
+    matches!(path, [a, b'?', b'?', b, ..] if is_slash(*a) && is_slash(*b))
+}
+
+/// Whether a path chosen in the file dialog may be opened. Device
+/// namespaces reach raw disks, volumes and ports, so only the exact
+/// backslash `\\?\` prefix is accepted, followed by `<letter>:\` or `UNC\`.
+/// Win32 normalizes the forward form `//?/` (resolving `..`, which can walk
+/// a drive path into device or UNC space), so it is refused, as are
+/// `\\.\`, `//./` and `\??\` in any slash mix.
 fn path_allowed(path: &str) -> bool {
     let bytes = path.as_bytes();
-    if bytes.starts_with(br"\??\") {
+    if is_nt_prefix(bytes) {
         return false;
     }
     match win32_namespace(bytes) {
-        Some((b'?', rest)) => is_drive_path(rest) || is_unc_path(rest),
+        Some((b'?', rest)) => {
+            bytes.starts_with(br"\\?\") && (is_drive_path(rest) || is_unc_path(rest))
+        }
         Some(_) => false,
         None => true,
     }
+}
+
+/// Whether a path from project state may be opened without asking. Stricter
+/// than `path_allowed`; see the comment where it is used for why.
+fn restore_allowed(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    path_allowed(path)
+        && win32_namespace(bytes).is_none()
+        && !is_nt_prefix(bytes)
+        && !is_remote(path)
+        && !bytes
+            .split(|&byte| is_slash(byte))
+            .any(|part| part == b"." || part == b"..")
 }
 
 /// Whether `path` names a network location: `\\server\…`, `//server/…`
@@ -388,19 +409,25 @@ fn load_unguarded(path: &[u8], hash: u64, restore: bool) -> LoadOutcome {
     if path == PANIC_FOR_TESTS {
         panic!("a load that panics, for tests");
     }
-    // Project paths are opened without asking, so only ever open a plain
-    // file: never a device, a pipe or a directory.
+    // Project paths are opened without asking, and a project can come from
+    // anyone, so a restore opens only an ordinary local path:
+    // - Never a network path, not even to stat it. On Windows, touching
+    //   `\\server\share` makes the OS sign in to that server with the
+    //   user's NTLM hash, so a crafted project could harvest it.
+    // - Never a namespace path (`\\?\`, `//?/`, `\\.\`, `//./`, `\??\`).
+    //   Win32 normalizes the forward forms, so `..` can walk a drive path
+    //   into UNC or device space, e.g. `//?/C:/../../UNC/srv/share/x.wav`;
+    //   no string allowlist can be trusted there.
+    // - Never a path with a `.` or `..` component, for the same reason.
+    // Our own dialog never saves such paths. A refused path shows as
+    // missing and the user can Relink. Choose (a file the user picked in
+    // the dialog) is trusted, minus raw devices. Keep these checks before
+    // every filesystem call, `metadata` included.
+    if restore && !restore_allowed(path) {
+        return LoadOutcome::Missing;
+    }
     if !path_allowed(path) {
         return LoadOutcome::Unreadable;
-    }
-    // Never open a network path from project state, not even to stat it.
-    // On Windows, touching `\\server\share` makes the OS sign in to that
-    // server with the user's NTLM hash, so a project from someone else could
-    // harvest it. A restored share shows as missing and the user can Relink;
-    // choosing a file on a share in the dialog (`Choose`) is still allowed.
-    // Keep this before every filesystem call, `metadata` included.
-    if restore && is_remote(path) {
-        return LoadOutcome::Missing;
     }
     let path = Path::new(path);
     match std::fs::metadata(path) {
@@ -658,6 +685,13 @@ mod tests {
             r"\\?\",
             r"\\?",
             r"\\.",
+            "//?/c:/a.wav",
+            "//?/C:/../../UNC/srv/share/x.wav",
+            "//?/C:/../UNC/srv/share/x.wav",
+            r"\\?/C:/../UNC/srv/share/x.wav",
+            r"/\?\C:\a.wav",
+            "/??/C:/a.wav",
+            r"\??/C:/a.wav",
         ] {
             assert!(!path_allowed(bad), "{bad}");
         }
@@ -666,7 +700,6 @@ mod tests {
             r"C:\Users\todd\amen.wav",
             r"\\?\C:\very\long\amen.wav",
             r"\\?\c:\a.wav",
-            "//?/c:/a.wav",
             r"\\?\UNC\srv\share\a.wav",
             r"\\?\unc\srv\share\a.wav",
             "/Users/todd/amen.wav",
@@ -677,6 +710,84 @@ mod tests {
         let lib = Library::default();
         assert!(matches!(
             outcome_of(&lib, br"\\.\PhysicalDrive0"),
+            LoadOutcome::Unreadable
+        ));
+    }
+
+    #[test]
+    fn restore_refuses_namespaces_dot_components_and_shares() {
+        for refused in [
+            r"\\?\C:\breaks\a.wav",
+            r"\\?\c:\a.wav",
+            r"\\?\UNC\srv\share\a.wav",
+            "//?/C:/../../UNC/srv/share/x.wav",
+            r"\\?\C:\..\UNC\srv\share\x.wav",
+            r"\\?/C:/../UNC/srv/share/x.wav",
+            r"\\.\PhysicalDrive0",
+            "//./COM1",
+            r"\??\C:\a.wav",
+            "/??/C:/a.wav",
+            r"C:\Breaks\..\x.wav",
+            "/Users/a/../b/x.wav",
+            "/Users/a/./b/x.wav",
+            r"C:\Breaks/./x.wav",
+            "../x.wav",
+            "/Users/a/..",
+            r"\\srv\share\loop 174.wav",
+            "//srv/share/a.wav",
+        ] {
+            assert!(!restore_allowed(refused), "{refused}");
+        }
+        for allowed in [
+            r"C:\Breaks\amen 174.wav",
+            "/Users/todd/Breaks/amen.wav",
+            "/Users/todd/..hidden/a.wav",
+            "/Users/todd/a..b/x.wav",
+            "/Users/todd/.breaks/a.wav",
+        ] {
+            assert!(restore_allowed(allowed), "{allowed}");
+        }
+        // The user picked these in the dialog, so Choose still takes them.
+        for chosen in [
+            r"C:\Breaks\..\x.wav",
+            "/Users/a/../b/x.wav",
+            r"\\?\C:\breaks\a.wav",
+            r"\\srv\share\loop 174.wav",
+        ] {
+            assert!(path_allowed(chosen), "{chosen}");
+        }
+    }
+
+    #[test]
+    fn restore_publishes_missing_for_a_dotted_path_that_choose_opens() {
+        let lib = Library::default();
+        let fixture_path = fixture("loop_160_4beats_mono16_48k.wav");
+        let dir = fixture_path.parent().unwrap();
+        let dotted = format!(
+            "{}/../fixtures/loop_160_4beats_mono16_48k.wav",
+            dir.to_str().unwrap()
+        );
+        lib.request(0, dotted.as_bytes(), Purpose::Restore).unwrap();
+        lib.request(0, dotted.as_bytes(), Purpose::Choose).unwrap();
+        lib.request(1, b"//?/C:/../../UNC/srv/share/x.wav", Purpose::Restore)
+            .unwrap();
+        lib.request(1, b"//?/C:/../../UNC/srv/share/x.wav", Purpose::Choose)
+            .unwrap();
+        lib.run_pending();
+        assert!(matches!(
+            lib.result(0, Purpose::Restore).unwrap().outcome,
+            LoadOutcome::Missing
+        ));
+        assert!(matches!(
+            lib.result(0, Purpose::Choose).unwrap().outcome,
+            LoadOutcome::Loaded(_)
+        ));
+        assert!(matches!(
+            lib.result(1, Purpose::Restore).unwrap().outcome,
+            LoadOutcome::Missing
+        ));
+        assert!(matches!(
+            lib.result(1, Purpose::Choose).unwrap().outcome,
             LoadOutcome::Unreadable
         ));
     }
