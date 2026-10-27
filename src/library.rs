@@ -334,12 +334,22 @@ fn restore_allowed(path: &str) -> bool {
             .split(|&byte| is_slash(byte))
             .any(|part| part == b"." || part == b"..")
         && !path.split(['\\', '/']).any(is_dos_device)
+        && !has_stray_colon(bytes)
+}
+
+/// Whether `path` has a `:` anywhere but right after a leading drive
+/// letter (`C:`). Windows ends a device name at `:` (`nul:stream`,
+/// `COM1:`), and a later `:` also names an NTFS alternate data stream.
+fn has_stray_colon(path: &[u8]) -> bool {
+    path.iter()
+        .enumerate()
+        .any(|(index, &byte)| byte == b':' && !(index == 1 && path[0].is_ascii_alphabetic()))
 }
 
 /// Whether a path component names a reserved DOS device on Windows
 /// (`COM1`, `nul.wav`, `Lpt1 .wav`, `CONIN$`…). Opening one, even just to
 /// stat it, opens the device: a serial or parallel port, or a driver that
-/// can stall. The base name is the part before the first `.`, with
+/// can stall. The base name is the part before the first `.` or `:`, with
 /// trailing spaces and dots trimmed, compared ignoring ASCII case.
 fn is_dos_device(component: &str) -> bool {
     const NAMES: [&str; 32] = [
@@ -376,7 +386,8 @@ fn is_dos_device(component: &str) -> bool {
         "LPT\u{b2}",
         "LPT\u{b3}",
     ];
-    let base = component.split('.').next().unwrap_or("");
+    // Windows ends a device name at ':' as well as '.'.
+    let base = component.split(['.', ':']).next().unwrap_or("");
     let base = base.trim_end_matches([' ', '.']);
     NAMES.iter().any(|name| base.eq_ignore_ascii_case(name))
 }
@@ -468,6 +479,9 @@ fn load_unguarded(path: &[u8], hash: u64, restore: bool) -> LoadOutcome {
     // - Never a reserved DOS device name in any component (`C:\Breaks\COM1`,
     //   `nul.wav`): `metadata` would open the port or driver before
     //   `is_file` could reject it.
+    // - Never a `:` except after a leading drive letter: Windows also ends a
+    //   device name at `:` (`C:\Breaks\nul:stream`), and a later `:`
+    //   names an NTFS alternate data stream.
     // Our own dialog never saves such paths. A refused path shows as
     // missing and the user can Relink. Choose (a file the user picked in
     // the dialog) is trusted, minus raw devices. Keep these checks before
@@ -761,6 +775,30 @@ mod tests {
             outcome_of(&lib, br"\\.\PhysicalDrive0"),
             LoadOutcome::Unreadable
         ));
+    }
+
+    #[test]
+    fn restore_refuses_a_colon_anywhere_but_after_a_drive_letter() {
+        for refused in [
+            r"C:\Breaks\nul:stream",
+            r"C:\x\COM1:",
+            r"C:\x\a.wav:evil",
+            "C:x:y",
+            "/x/CON:",
+            r"1:\x.wav",
+            "CON:x.wav",
+            ":x.wav",
+        ] {
+            assert!(!restore_allowed(refused), "{refused}");
+        }
+        for allowed in [r"C:\Breaks\a.wav", r"c:\a.wav", "/Users/a/b.wav"] {
+            assert!(restore_allowed(allowed), "{allowed}");
+        }
+        // Choose is unchanged: the user picked the file.
+        assert!(path_allowed(r"C:\x\a.wav:evil"));
+        // Defense in depth: a device name also ends at ':'.
+        assert!(is_dos_device("nul:stream"));
+        assert!(is_dos_device("COM1:"));
     }
 
     #[test]
