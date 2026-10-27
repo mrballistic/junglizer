@@ -60,13 +60,16 @@ fn fixture(
         "ghost-stopped" | "missing-samples" | "first-run" | "empty" | "amen-modal"
     ) {
         editor.state.update(|s| {
-            for (slot, source, slice, length) in [
-                (0, 0, 0, 3),
-                (5, 1, 2, 1),
-                (10, 2, 3, 2),
-                (24, 3, 5, 2),
-                (28, 0, 6, 1),
-                (30, 1, 1, 2),
+            // (slot, source, slice, length, mode, repeats): Fit or retriggers
+            // make short slices fill their span; the locked one at slot 10
+            // already does.
+            for (slot, source, slice, length, mode, repeats) in [
+                (0, 0, 0, 3, 1, 1),
+                (5, 1, 2, 1, 0, 1),
+                (10, 2, 3, 2, 0, 1),
+                (24, 3, 5, 2, 0, 2),
+                (28, 0, 6, 1, 0, 1),
+                (30, 1, 1, 2, 0, 2),
             ] {
                 assert!(s.place(StepPlacement {
                     active: true,
@@ -74,9 +77,9 @@ fn fixture(
                     span_slots: length,
                     source_loop: source,
                     source_slice: slice,
-                    mode: 0,
+                    mode,
                     bit_depth: 16,
-                    repeats: 1,
+                    repeats,
                     locked: slot == 10
                 }));
             }
