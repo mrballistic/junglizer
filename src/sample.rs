@@ -19,7 +19,6 @@ impl StereoSample {
         decode_bytes(bytes, Some("wav"))
     }
 
-    #[allow(dead_code)] // used by the break importer in later tasks
     pub fn duration_secs(&self) -> f64 {
         if self.sample_rate == 0 {
             return 0.0;
