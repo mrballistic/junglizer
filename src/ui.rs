@@ -20,8 +20,8 @@ const EDGE: Color32 = Color32::from_rgb(76, 81, 61);
 const INK: Color32 = Color32::from_rgb(244, 241, 222);
 const MUTED: Color32 = Color32::from_rgb(171, 178, 154);
 const ACCENT: Color32 = Color32::from_rgb(211, 224, 128);
-const CREDIT: &str =
-    "Built-in breaks played on the Salamander Drumkit by Alexander Holm (CC BY-SA 3.0)";
+/// The wordmark's hover text, which carries the drum kit credit.
+const WORDMARK_HOVER: &str = "Junglizer • Four-bar break instrument\nBuilt-in breaks played on the Salamander Drumkit by Alexander Holm (CC BY-SA 3.0)";
 const INITIAL_MESSAGE: &str =
     "Choose a source slice, then click a player slot. You can drag it there too.";
 const UNDO_HINT: &str = if cfg!(target_os = "macos") {
@@ -797,7 +797,7 @@ impl JunglizerUi {
             });
         });
         ui.horizontal(|ui| {
-            field_label(ui, "Length", 52.0);
+            field_label(ui, "Length", STEPPER_LABEL);
             let mut span = current.span_slots;
             let max = self.state.get().player_slots - current.start_slot;
             let suffix = if span == 1 { " slot" } else { " slots" };
@@ -812,9 +812,10 @@ impl JunglizerUi {
                 context.automate(P::EditLength, f64::from(span - 1) / 31.0);
             }
             ui.add_space(14.0);
-            field_label(ui, "Speed", 66.0);
+            field_label(ui, "Speed", CHOICE_LABEL);
             if let Some(mode) = segmented(
                 ui,
+                CHOICE_WIDTH,
                 current.mode,
                 &[(0, "Original", true, ""), (1, "Fit (pitch)", true, "")],
                 None,
@@ -825,7 +826,7 @@ impl JunglizerUi {
             }
         });
         ui.horizontal(|ui| {
-            field_label(ui, "Bits", 52.0);
+            field_label(ui, "Bits", STEPPER_LABEL);
             let mut bits = current.bit_depth;
             if stepper(
                 ui,
@@ -838,9 +839,10 @@ impl JunglizerUi {
                 context.automate(P::EditBits, f64::from(bits - 1) / 15.0);
             }
             ui.add_space(14.0);
-            field_label(ui, "Retrigger", 66.0);
+            field_label(ui, "Retrigger", CHOICE_LABEL);
             if let Some(n) = segmented(
                 ui,
+                CHOICE_WIDTH,
                 current.repeats,
                 &[
                     (1_u8, "1×", true, ""),
@@ -1291,10 +1293,9 @@ impl EditorUi<JunglizerParams> for JunglizerUi {
                         } else {
                             &self.message
                         };
-                        // Credit first, fixed at the right, then the reveal button;
-                        // the message takes what's left and truncates, so nothing overlaps.
+                        // The reveal and undo buttons at the right; the message
+                        // takes what's left and truncates, so nothing overlaps.
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(egui::RichText::new(CREDIT).small().color(MUTED));
                             let path = self.export_path.clone();
                             if let Some(path) = &path {
                                 if ui.small_button(crate::platform::REVEAL_LABEL).clicked() {
@@ -1675,9 +1676,9 @@ impl JunglizerUi {
                         .maintain_aspect_ratio(false)
                         .fit_to_exact_size(vec2(250.0, 65.0)),
                 )
-                .on_hover_text("Junglizer • Four-bar break instrument");
+                .on_hover_text(WORDMARK_HOVER);
             } else {
-                ui.heading("JUNGLIZER");
+                ui.heading("JUNGLIZER").on_hover_text(WORDMARK_HOVER);
             }
             ui.add_space(12.0);
             ui.spacing_mut().item_spacing.x = 0.0;
@@ -2011,7 +2012,7 @@ impl JunglizerUi {
             ui.colored_label(MUTED, "Fills keep locked slices");
         });
         ui.horizontal(|ui| {
-            field_label(ui, "Mode", 62.0);
+            field_label(ui, "Mode", PHRASE_LABEL);
             let mode = if frozen {
                 2
             } else if live_on {
@@ -2022,6 +2023,7 @@ impl JunglizerUi {
             let can_freeze = !live_on || live.is_some();
             let choice = segmented(
                 ui,
+                ui.available_width(),
                 mode,
                 &[
                     (0, "Edit", true, ""),
@@ -2089,10 +2091,11 @@ impl JunglizerUi {
             }
         });
         ui.horizontal(|ui| {
-            field_label(ui, "Playback", 62.0);
+            field_label(ui, "Playback", PHRASE_LABEL);
             let midi = context.params().playback.value() != 0;
             if let Some(choice) = segmented(
                 ui,
+                ui.available_width(),
                 u8::from(midi),
                 &[(0, "Internal", true, ""), (1, "MIDI region", true, "")],
                 Some(&[
@@ -2122,6 +2125,15 @@ impl JunglizerUi {
         }
     }
 }
+
+// The footer grid: shared label columns, and one width for the Speed and
+// Retrigger choices so their groups end together.
+const STEPPER_LABEL: f32 = 52.0;
+const CHOICE_LABEL: f32 = 66.0;
+const PHRASE_LABEL: f32 = 62.0;
+const CHOICE_WIDTH: f32 = 188.0;
+/// The widest stepper value, which sets every stepper's value field.
+const STEPPER_WIDEST: &str = "32 slots";
 
 /// A fixed-width field label, so rows of controls line up.
 fn field_label(ui: &mut Ui, text: &str, width: f32) {
@@ -2158,8 +2170,25 @@ fn stepper(
             *value -= 1;
             changed = true;
         }
+        // One width for every stepper, so the − and + buttons line up.
+        let widest = ui
+            .painter()
+            .layout_no_wrap(
+                STEPPER_WIDEST.to_owned(),
+                egui::TextStyle::Body.resolve(ui.style()),
+                INK,
+            )
+            .size()
+            .x;
+        let field = vec2(
+            (widest + 2.0 * ui.spacing().button_padding.x).ceil(),
+            ui.spacing().interact_size.y,
+        );
         changed |= ui
-            .add(egui::DragValue::new(value).range(low..=high).suffix(suffix))
+            .add_sized(
+                field,
+                egui::DragValue::new(value).range(low..=high).suffix(suffix),
+            )
             .on_hover_text(format!("{hover} · drag or type a value"))
             .changed();
         if ui
@@ -2178,12 +2207,14 @@ fn stepper(
     .inner
 }
 
-/// Framed choices joined into one control: the selected one on SELECTION,
-/// the rest on SURFACE. Each option is (value, label, enabled, why it's
+/// Framed choices joined into one control `width` wide, split evenly so
+/// stacked controls line up: the selected one on SELECTION, the rest on
+/// SURFACE. Each option is (value, label, enabled, why it's
 /// disabled). With `hovers`, each option explains itself. Returns the
 /// clicked value, if any.
 fn segmented<T: Copy + PartialEq>(
     ui: &mut Ui,
+    width: f32,
     current: T,
     options: &[(T, &str, bool, &str)],
     hovers: Option<&[&str]>,
@@ -2192,6 +2223,9 @@ fn segmented<T: Copy + PartialEq>(
     ui.scope(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         let last = options.len() - 1;
+        // Even shares of `width`; the last segment takes the rounding.
+        let share = (width / options.len() as f32).floor();
+        let height = ui.spacing().interact_size.y;
         for (i, &(value, label, enabled, disabled_hover)) in options.iter().enumerate() {
             let selected = value == current;
             let radius = egui::CornerRadius {
@@ -2206,7 +2240,14 @@ fn segmented<T: Copy + PartialEq>(
             if selected {
                 button = button.stroke(Stroke::new(1.0_f32, ACCENT));
             }
-            let mut response = ui.add_enabled(enabled, button);
+            let segment = if i == last {
+                width - share * last as f32
+            } else {
+                share
+            };
+            let mut response = ui
+                .add_enabled_ui(enabled, |ui| ui.add_sized(vec2(segment, height), button))
+                .inner;
             if let Some(text) = hovers.and_then(|h| h.get(i)) {
                 response = response.on_hover_text(*text);
             }
