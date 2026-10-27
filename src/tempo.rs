@@ -6,6 +6,10 @@ pub const MAX_BEATS: u8 = 32;
 pub const MIN_BPM: f64 = 80.0;
 pub const MAX_BPM: f64 = 195.0;
 pub const TOLERANCE: f64 = 0.01;
+/// The longest file that can pass the rule: `MAX_BEATS` at the slowest
+/// tempo the tolerance admits (about 24.24 s). Longer files are refused
+/// before they are decoded in full.
+pub const MAX_BREAK_SECS: f64 = MAX_BEATS as f64 * 60.0 / (MIN_BPM * (1.0 - TOLERANCE));
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Reading {
