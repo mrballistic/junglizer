@@ -50,16 +50,18 @@ jobs:
       - name: Pack each format
         shell: bash
         run: |
+          # Asset names carry no version, so the site can link to
+          # releases/latest/download/<name> and always get the newest build.
           mkdir -p dist
           for format in component vst3 clap; do
-            # Stage the bundle and the notice together so both sit at the zip root.
+            # Stage the bundle, LICENSE and the notices together at the zip root.
             stage="$(mktemp -d)"
             ditto "target/bundles/Junglizer.$format" "$stage/Junglizer.$format"
-            cp THIRD-PARTY-NOTICES.md "$stage/"
-            ditto -c -k --sequesterRsrc "$stage" "dist/Junglizer-${GITHUB_REF_NAME}-${{ matrix.arch }}-$format.zip"
+            cp LICENSE THIRD-PARTY-NOTICES.md "$stage/"
+            ditto -c -k --sequesterRsrc "$stage" "dist/Junglizer-macos-${{ matrix.arch }}-$format.zip"
             rm -rf "$stage"
           done
-          (cd dist && shasum -a 256 -- *.zip > "SHA256-${{ matrix.arch }}.txt")
+          (cd dist && shasum -a 256 -- *.zip > "SHA256-macos-${{ matrix.arch }}.txt")
       - uses: actions/upload-artifact@v7
         with:
           name: bundles-${{ matrix.arch }}
@@ -87,11 +89,11 @@ jobs:
       - name: Pack each format
         shell: pwsh
         run: |
-          # A dispatch run is on a branch, whose name may contain slashes.
-          $version = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { "dispatch-$($env:GITHUB_SHA.Substring(0, 7))" }
+          # Asset names carry no version, so the site can link to
+          # releases/latest/download/<name> and always get the newest build.
           New-Item -ItemType Directory -Force dist | Out-Null
           foreach ($format in 'vst3', 'clap') {
-            Compress-Archive -Path "target/bundles/Junglizer.$format", "THIRD-PARTY-NOTICES.md" -DestinationPath "dist/Junglizer-$version-windows-x86_64-$format.zip"
+            Compress-Archive -Path "target/bundles/Junglizer.$format", "LICENSE", "THIRD-PARTY-NOTICES.md" -DestinationPath "dist/Junglizer-windows-x86_64-$format.zip"
           }
           Get-ChildItem dist -Filter *.zip | ForEach-Object {
             $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
@@ -123,12 +125,11 @@ jobs:
       - name: Pack each format
         shell: bash
         run: |
-          # A dispatch run is on a branch, whose name may contain slashes.
-          if [ "$GITHUB_REF_TYPE" = tag ]; then version="$GITHUB_REF_NAME"; else version="dispatch-${GITHUB_SHA::7}"; fi
+          # Asset names carry no version (see the Windows job).
           mkdir -p dist
           for format in vst3 clap; do
-            (cd target/bundles && zip -r -X "$GITHUB_WORKSPACE/dist/Junglizer-$version-linux-x86_64-$format.zip" "Junglizer.$format")
-            zip -X "dist/Junglizer-$version-linux-x86_64-$format.zip" THIRD-PARTY-NOTICES.md
+            (cd target/bundles && zip -r -X "$GITHUB_WORKSPACE/dist/Junglizer-linux-x86_64-$format.zip" "Junglizer.$format")
+            zip -X "dist/Junglizer-linux-x86_64-$format.zip" LICENSE THIRD-PARTY-NOTICES.md
           done
           (cd dist && sha256sum -- *.zip > SHA256-linux.txt)
       - uses: actions/upload-artifact@v7
@@ -158,6 +159,5 @@ jobs:
           gh release create "$GITHUB_REF_NAME" dist/* \
             --verify-tag \
             --draft \
-            --prerelease \
             --title "Junglizer $GITHUB_REF_NAME" \
             --notes "Draft build artifacts. The six macOS archives must be signed, notarized, stapled, and replaced, with their checksums, before publishing. The Windows and Linux zips (VST3 and CLAP) are unsigned. See docs/RELEASE-SIGNING.md."
