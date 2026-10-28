@@ -11,7 +11,7 @@ Closes #<!-- issue number: the maintainer must have agreed to this change -->
 
 ## Checklist
 
-- [ ] The linked issue was agreed by the maintainer, 
+- [ ] The linked issue was agreed by the maintainer
 - [ ] One focused change, with no unrelated refactors, reformatting or dependency bumps
 - [ ] `cargo fmt --all -- --check`, `cargo test --locked` and `cargo test --locked --features rt-paranoid` pass
 - [ ] Every commit is signed off (`git commit -s`) under the Developer Certificate of Origin
