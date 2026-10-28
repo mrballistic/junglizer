@@ -5,7 +5,7 @@ Thanks for your interest. Junglizer is a small project with one maintainer, so c
 ## The short version
 
 - **Bug reports and ideas are welcome.** Open an issue.
-- **Pull requests are by invitation.** Open an issue first, and wait until the maintainer agrees to the change and says a PR is welcome. Unsolicited pull requests may be closed without review, however good they are.
+- **Pull requests are by invitation.** Only collaborators can open pull requests in this repository. Open an issue first; if the maintainer agrees to the change, they’ll invite you as a collaborator for it.
 - **Small is good.** One focused change per pull request.
 
 ## Reporting bugs
@@ -32,9 +32,10 @@ Don’t open a public issue. Use GitHub’s **Report a vulnerability** button on
 **Before you write code:**
 
 1. Find or open an issue for the change.
-2. Wait for the maintainer to agree on the approach and say a PR is welcome. Issues ready for outside help are labeled `help wanted`.
+2. Wait for the maintainer to agree on the approach. Issues ready for outside help are labeled `help wanted`.
+3. The maintainer invites you as a collaborator so you can open the pull request. Collaborator access is for that work and may be removed afterwards.
 
-The one exception is an obvious typo or broken link in the docs, which you can send directly.
+For an obvious typo or broken link in the docs, just open an issue that points at it.
 
 **What a pull request needs:**
 

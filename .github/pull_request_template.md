@@ -1,5 +1,5 @@
 <!--
-Junglizer accepts pull requests by invitation. Please read CONTRIBUTING.md first.
+Junglizer accepts pull requests by invitation (collaborators only). Please read CONTRIBUTING.md.
 Pull requests without an agreed issue may be closed without review.
 -->
 
@@ -11,7 +11,7 @@ Closes #<!-- issue number: the maintainer must have agreed to this change -->
 
 ## Checklist
 
-- [ ] The linked issue was agreed by the maintainer, who said a PR is welcome (or this is a docs typo or broken-link fix)
+- [ ] The linked issue was agreed by the maintainer, 
 - [ ] One focused change, with no unrelated refactors, reformatting or dependency bumps
 - [ ] `cargo fmt --all -- --check`, `cargo test --locked` and `cargo test --locked --features rt-paranoid` pass
 - [ ] Every commit is signed off (`git commit -s`) under the Developer Certificate of Origin
