@@ -54,10 +54,10 @@ jobs:
           # releases/latest/download/<name> and always get the newest build.
           mkdir -p dist
           for format in component vst3 clap; do
-            # Stage the bundle and the notice together so both sit at the zip root.
+            # Stage the bundle, LICENSE and the notices together at the zip root.
             stage="$(mktemp -d)"
             ditto "target/bundles/Junglizer.$format" "$stage/Junglizer.$format"
-            cp THIRD-PARTY-NOTICES.md "$stage/"
+            cp LICENSE THIRD-PARTY-NOTICES.md "$stage/"
             ditto -c -k --sequesterRsrc "$stage" "dist/Junglizer-macos-${{ matrix.arch }}-$format.zip"
             rm -rf "$stage"
           done
@@ -93,7 +93,7 @@ jobs:
           # releases/latest/download/<name> and always get the newest build.
           New-Item -ItemType Directory -Force dist | Out-Null
           foreach ($format in 'vst3', 'clap') {
-            Compress-Archive -Path "target/bundles/Junglizer.$format", "THIRD-PARTY-NOTICES.md" -DestinationPath "dist/Junglizer-windows-x86_64-$format.zip"
+            Compress-Archive -Path "target/bundles/Junglizer.$format", "LICENSE", "THIRD-PARTY-NOTICES.md" -DestinationPath "dist/Junglizer-windows-x86_64-$format.zip"
           }
           Get-ChildItem dist -Filter *.zip | ForEach-Object {
             $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
@@ -129,7 +129,7 @@ jobs:
           mkdir -p dist
           for format in vst3 clap; do
             (cd target/bundles && zip -r -X "$GITHUB_WORKSPACE/dist/Junglizer-linux-x86_64-$format.zip" "Junglizer.$format")
-            zip -X "dist/Junglizer-linux-x86_64-$format.zip" THIRD-PARTY-NOTICES.md
+            zip -X "dist/Junglizer-linux-x86_64-$format.zip" LICENSE THIRD-PARTY-NOTICES.md
           done
           (cd dist && sha256sum -- *.zip > SHA256-linux.txt)
       - uses: actions/upload-artifact@v7

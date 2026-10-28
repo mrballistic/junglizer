@@ -1,6 +1,8 @@
 # Third-party notices
 
-Junglizer is built on the work below. This file ships in every release zip next to the plugin bundle.
+Junglizer is free software, licensed under the GNU General Public License, version 3 or (at your option) any later version. See `LICENSE`, which ships in every release zip next to this file and the plugin bundle. Complete source code is at https://github.com/mrballistic/junglizer.
+
+Junglizer is built on the work below, whose own licenses still apply to those parts.
 
 ## Built-in breaks
 

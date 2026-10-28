@@ -2,6 +2,8 @@
 name = "junglizer"
 version = "0.9.1-beta.2"
 edition = "2024"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/mrballistic/junglizer"
 
 [lib]
 crate-type = ["cdylib", "staticlib", "rlib"]
