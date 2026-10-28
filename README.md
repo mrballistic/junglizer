@@ -18,7 +18,7 @@ The player follows host transport and tempo. When the host tempo differs from a 
 
 ## Download and install
 
-Use the [0.9.1 beta 2 release](https://github.com/mrballistic/junglizer/releases/tag/v0.9.1-beta.2). On a Mac, pick the archive for your machine (`arm64` for Apple Silicon, `x86_64` for Intel) and plugin format. On Windows and Linux, pick the `windows-x86_64` or `linux-x86_64` VST3 or CLAP archive. Unzip it and copy the bundle to:
+Get the latest build from the [releases page](https://github.com/mrballistic/junglizer/releases/latest). Archive names carry no version: `Junglizer-macos-arm64-<format>.zip` (Apple Silicon) and `Junglizer-macos-x86_64-<format>.zip` (Intel), where `<format>` is `component` (AUv2), `vst3` or `clap`; `Junglizer-windows-x86_64-<format>.zip` and `Junglizer-linux-x86_64-<format>.zip` for `vst3` or `clap`. Each zip holds one plugin, plus the license and third-party notices. Unzip it and copy the bundle to:
 
 | System | Format | Copy the unzipped bundle to |
 | --- | --- | --- |
@@ -30,7 +30,7 @@ Use the [0.9.1 beta 2 release](https://github.com/mrballistic/junglizer/releases
 | Linux | VST3 | `~/.vst3` |
 | Linux | CLAP | `~/.clap` |
 
-Restart the host to rescan. The six macOS archives are signed with a Developer ID Application certificate, notarized by Apple, and include stapled tickets. The Windows and Linux archives are unsigned, and Linux support is beta. The release also provides SHA-256 checksums for every archive. No separate sample installation is needed.
+Restart the host to rescan. The six macOS archives are signed with a Developer ID Application certificate, notarized by Apple, and include stapled tickets. The Windows and Linux archives are unsigned, and Linux support is beta. The release also provides SHA-256 checksums for every archive (`SHA256-macos-arm64.txt`, `SHA256-macos-x86_64.txt`, `SHA256-windows.txt`, `SHA256-linux.txt`). No separate sample installation is needed.
 
 ## MIDI export and automation
 
@@ -38,21 +38,14 @@ Restart the host to rescan. The six macOS archives are signed with a Developer I
 
 The plugin exposes its controls as host automation parameters, including source and player selection, marker position, slice properties, bass tags, tone, output, playback mode, live variations, and momentary actions. Map CS12 controls using Logic's controller assignment workflow. For a momentary action, send a low-to-high transition and return it low before triggering again. Exported MIDI uses channel 1 notes `0..127` for break `0..3` × slice `0..31`; CC `20` is speed, `21` bit depth, `22` retriggers, `23` length, `24` slot count, `25` tone, `26` root, and `30` the bar's ghost break.
 
-## Build and verify
+## Credits
 
-Requires Rust 1.92 or newer and `cargo-truce` 6.3. On macOS you also need the Xcode command-line tools. On Windows, the MSVC build tools are enough. On Linux, install `pkg-config` and the X11, XCB, OpenGL and D-Bus development packages; the CI workflow lists them. AUv2 builds only on macOS; Windows and Linux build VST3 and CLAP. The four built-in amen WAV files in `sample/` are embedded at build time, and their license terms are in `sample/LICENSE.md`.
+The built-in amen is played on the Salamander Drumkit by Alexander Holm (CC BY-SA 3.0). Nick Collins’s *Algorithmic Composition Methods for Breakbeat Science* ([local PDF](docs/acmethodsforbbsci.pdf)) informed the separation of source cuts, placements and playback. [Livecut](https://github.com/mdsp/Livecut) inspired the first editable fill suggestion; Junglizer uses its own code and deterministic rendering of accepted fills. See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md), which also ships in every release zip.
 
-```sh
-cargo fmt --all -- --check
-cargo test --locked
-cargo truce build --au2 --vst3 --clap   # macOS
-cargo truce build --vst3 --clap         # Windows and Linux
-cargo truce validate --auval            # macOS only
-```
+## More
 
-`cargo truce build` stages the format bundles in `target/bundles/`. `cargo truce install --au2 --user --no-build` installs the staged AU for the current user. The [CI and release workflow](.github/workflows/ci-release.yml) tests pushes and pull requests on macOS. Release tags also build both Mac architectures, Windows x86_64 and Linux x86_64. A release maintainer signs, notarizes, and staples each macOS format before publishing the downloads; see [release signing](docs/RELEASE-SIGNING.md). This beta retains the current plugin IDs in `truce.toml`; changing them would affect project recall.
-
-The [UI design brief](docs/UI-DESIGN-BRIEF.md), [implemented design system](DESIGN.md), [validation record](docs/UI-REFRESH-VALIDATION.md), and [0.9.1 beta 2 release notes](docs/RELEASE-NOTES-0.9.1-beta.2.md) document the current scope and its limits. Nick Collins’s *Algorithmic Composition Methods for Breakbeat Science* ([local PDF](docs/acmethodsforbbsci.pdf)) informed the separation of source cuts, placements, and playback. [Livecut](https://github.com/mdsp/Livecut) inspired the first editable fill suggestion; Junglizer uses its own code and deterministic rendering of accepted fills. The built-in amen is played on the Salamander Drumkit by Alexander Holm (CC BY-SA 3.0). See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md), which also ships in every release zip.
+- [CHANGELOG.md](CHANGELOG.md): what changed in each release.
+- [docs/DEVELOPING.md](docs/DEVELOPING.md): building, testing, architecture and releasing.
 
 ## License
 
