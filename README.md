@@ -46,6 +46,7 @@ The built-in amen is played on the Salamander Drumkit by Alexander Holm (CC BY-S
 
 - [CHANGELOG.md](CHANGELOG.md): what changed in each release.
 - [docs/DEVELOPING.md](docs/DEVELOPING.md): building, testing, architecture and releasing.
+- [CONTRIBUTING.md](CONTRIBUTING.md): bug reports, ideas, and how pull requests work here (by invitation).
 
 ## License
 
