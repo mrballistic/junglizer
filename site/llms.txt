@@ -22,16 +22,23 @@ Junglizer is made by Todd Greco (mrballistic). Junglizer’s own 174 BPM amen sh
 
 ## Downloads (0.9.1 beta 2)
 
-- [Apple Silicon, AUv2](https://getjunglizer.com/downloads/Junglizer-v0.9.1-beta.2-arm64-component.zip)
-- [Apple Silicon, VST3](https://getjunglizer.com/downloads/Junglizer-v0.9.1-beta.2-arm64-vst3.zip)
-- [Apple Silicon, CLAP](https://getjunglizer.com/downloads/Junglizer-v0.9.1-beta.2-arm64-clap.zip)
-- [Intel, AUv2](https://getjunglizer.com/downloads/Junglizer-v0.9.1-beta.2-x86_64-component.zip)
-- [Intel, VST3](https://getjunglizer.com/downloads/Junglizer-v0.9.1-beta.2-x86_64-vst3.zip)
-- [Intel, CLAP](https://getjunglizer.com/downloads/Junglizer-v0.9.1-beta.2-x86_64-clap.zip)
-- [Windows x86_64, VST3](https://getjunglizer.com/downloads/Junglizer-v0.9.1-beta.2-windows-x86_64-vst3.zip)
-- [Windows x86_64, CLAP](https://getjunglizer.com/downloads/Junglizer-v0.9.1-beta.2-windows-x86_64-clap.zip)
-- [Linux x86_64, VST3](https://getjunglizer.com/downloads/Junglizer-v0.9.1-beta.2-linux-x86_64-vst3.zip)
-- [Linux x86_64, CLAP](https://getjunglizer.com/downloads/Junglizer-v0.9.1-beta.2-linux-x86_64-clap.zip)
+All files are served from the latest GitHub release: https://github.com/mrballistic/junglizer/releases/latest
+
+- [Apple Silicon, AUv2](https://github.com/mrballistic/junglizer/releases/latest/download/Junglizer-macos-arm64-component.zip)
+- [Apple Silicon, VST3](https://github.com/mrballistic/junglizer/releases/latest/download/Junglizer-macos-arm64-vst3.zip)
+- [Apple Silicon, CLAP](https://github.com/mrballistic/junglizer/releases/latest/download/Junglizer-macos-arm64-clap.zip)
+- [Intel, AUv2](https://github.com/mrballistic/junglizer/releases/latest/download/Junglizer-macos-x86_64-component.zip)
+- [Intel, VST3](https://github.com/mrballistic/junglizer/releases/latest/download/Junglizer-macos-x86_64-vst3.zip)
+- [Intel, CLAP](https://github.com/mrballistic/junglizer/releases/latest/download/Junglizer-macos-x86_64-clap.zip)
+- [Windows x86_64, VST3](https://github.com/mrballistic/junglizer/releases/latest/download/Junglizer-windows-x86_64-vst3.zip)
+- [Windows x86_64, CLAP](https://github.com/mrballistic/junglizer/releases/latest/download/Junglizer-windows-x86_64-clap.zip)
+- [Linux x86_64, VST3](https://github.com/mrballistic/junglizer/releases/latest/download/Junglizer-linux-x86_64-vst3.zip)
+- [Linux x86_64, CLAP](https://github.com/mrballistic/junglizer/releases/latest/download/Junglizer-linux-x86_64-clap.zip)
+
+## Source and license
+
+- [Source on GitHub](https://github.com/mrballistic/junglizer)
+- [Free software under the GNU GPL v3](https://github.com/mrballistic/junglizer/blob/main/LICENSE)
 
 ## Optional
 
