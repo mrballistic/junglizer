@@ -56,4 +56,6 @@ The [UI design brief](docs/UI-DESIGN-BRIEF.md), [implemented design system](DESI
 
 ## License
 
+Junglizer · Copyright © 2026 Todd Greco.
+
 Junglizer is free software under the [GNU General Public License v3.0 or later](LICENSE): you can use, study, share and modify it, and if you distribute a modified version you must share its source under the same license. The built-in amen breaks are separately licensed CC BY-SA 3.0 (see [`sample/LICENSE.md`](sample/LICENSE.md)), and the vendored truce-egui keeps its Apache-2.0/MIT terms. Third-party credits are in [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md).
