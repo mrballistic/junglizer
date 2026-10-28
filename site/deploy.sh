@@ -1,31 +1,25 @@
 #!/usr/bin/env bash
 # Publish the getjunglizer.com site.
-# Pulls release zips from the private GitHub repo using YOUR local `gh` login,
-# then rsyncs the site (plus downloads/) to the Ubuntu server.
+# Downloads are no longer self-hosted: the site links to
+# https://github.com/mrballistic/junglizer/releases/latest/download/<name>,
+# so no gh login (and no release zips) is needed here. This just rsyncs the
+# site to the Ubuntu server. downloads/ is excluded with --delete-excluded,
+# so any old self-hosted zips on the server are removed.
 #
-# Usage:  ./site/deploy.sh [tag]        e.g. ./site/deploy.sh v0.9.1-beta.2
-# Needs:  gh (logged in: `gh auth status`), rsync, SSH access to the server.
+# Usage:  ./site/deploy.sh
+# Needs:  rsync, SSH access to the server.
 set -euo pipefail
 
-TAG="${1:-v0.9.1-beta.2}"
-REPO="mrballistic/junglizer"
 SERVER="${SERVER:-toddgreco@mrballistic.com}"
 REMOTE_DIR="${REMOTE_DIR:-/var/www/getjunglizer.com}"
 
 SITE_DIR="$(cd "$(dirname "$0")" && pwd)"
-DL_DIR="$SITE_DIR/downloads"
-mkdir -p "$DL_DIR"
-
-echo "→ Downloading $TAG release assets from $REPO"
-gh release download "$TAG" --repo "$REPO" --dir "$DL_DIR" \
-  --pattern '*.zip' --pattern 'SHA256-*.txt' --clobber
-
-echo "→ Verifying checksums"
-( cd "$DL_DIR" && for f in SHA256-*.txt; do shasum -a 256 -c "$f"; done )
 
 echo "→ Uploading to $SERVER:$REMOTE_DIR"
-rsync -avz --delete --chmod=D755,F644 \
-  --exclude 'deploy.sh' --exclude '.DS_Store' \
+# A plain --exclude would *protect* downloads/ from --delete on the server;
+# --delete-excluded makes --delete remove it there too.
+rsync -avz --delete --delete-excluded --chmod=D755,F644 \
+  --exclude 'deploy.sh' --exclude '.DS_Store' --exclude 'downloads/' \
   "$SITE_DIR/" "$SERVER:$REMOTE_DIR/"
 
 echo "✓ Done. https://getjunglizer.com"

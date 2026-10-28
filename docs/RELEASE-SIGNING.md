@@ -4,6 +4,8 @@ The tag workflow builds AUv2, VST3, and CLAP for Apple Silicon and Intel and cre
 
 This release uses the `Developer ID Application: Todd Greco (89YJQ4UB7V)` certificate and the `TRUCE_NOTARY` notarytool Keychain profile. The profile contains credentials in the local Keychain; do not put those credentials or an exported signing key in this repository. Verify the profile with `xcrun notarytool history --keychain-profile TRUCE_NOTARY`.
 
+**Scripted:** `tools/release/sign_macos.sh <tag> <arm64|x86_64> [--upload]` performs the steps below for one architecture. It downloads that architecture’s CI archives and checks their checksums, signs, notarizes (waiting for `Accepted`), staples and validates each bundle, repackages with `LICENSE` and `THIRD-PARTY-NOTICES.md`, extracts and re-verifies each final zip, and writes `SHA256-macos-<arch>.txt`. Output lands in `~/current_work/junglizer-release/<tag>/<arch>/final`, never in `target/`. With `--upload` it also replaces the draft release’s assets with `gh release upload --clobber`. Run it once per architecture, then check the uploads and publish the release as the latest.
+
 For each architecture, unpack the three CI archives, then sign each `.component`, `.vst3`, and `.clap` bundle with hardened runtime and a secure timestamp:
 
 ```sh

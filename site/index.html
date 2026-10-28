@@ -29,7 +29,7 @@
   "operatingSystem": "macOS, Windows, Linux",
   "processorRequirements": "Apple Silicon (arm64) or Intel (x86_64) on macOS; x86_64 on Windows and Linux",
   "softwareVersion": "0.9.1-beta.2",
-  "downloadUrl": "https://getjunglizer.com/#download",
+  "downloadUrl": "https://github.com/mrballistic/junglizer/releases/latest",
   "isAccessibleForFree": true,
   "offers": {
     "@type": "Offer",
@@ -176,7 +176,7 @@
 
   footer { border-top: 1px solid var(--surface); padding: 32px 0 48px; color: var(--muted); font-size: 14px; }
   footer .wrap { display: flex; justify-content: space-between; align-items: center; gap: 8px 16px; flex-wrap: wrap; }
-  footer .legal { display: flex; gap: 20px; align-items: center; }
+  footer .legal { display: flex; flex-wrap: wrap; gap: 20px; align-items: center; }
   footer .inspired { flex-basis: 100%; margin: 12px 0 0; max-width: 640px; }
   footer .legal a { display: inline-flex; align-items: center; min-height: 44px; }
 
@@ -292,18 +292,18 @@
           <h3>Apple Silicon</h3>
           <p class="arch">M1 and later · arm64</p>
           <ul>
-            <li><a href="downloads/Junglizer-v0.9.1-beta.2-arm64-component.zip">AUv2</a><span>Logic Pro, GarageBand</span></li>
-            <li><a href="downloads/Junglizer-v0.9.1-beta.2-arm64-vst3.zip">VST3</a><span>Ableton Live, Cubase, Studio One</span></li>
-            <li><a href="downloads/Junglizer-v0.9.1-beta.2-arm64-clap.zip">CLAP</a><span>Bitwig, Reaper</span></li>
+            <li><a href="https://github.com/mrballistic/junglizer/releases/latest/download/Junglizer-macos-arm64-component.zip">AUv2</a><span>Logic Pro, GarageBand</span></li>
+            <li><a href="https://github.com/mrballistic/junglizer/releases/latest/download/Junglizer-macos-arm64-vst3.zip">VST3</a><span>Ableton Live, Cubase, Studio One</span></li>
+            <li><a href="https://github.com/mrballistic/junglizer/releases/latest/download/Junglizer-macos-arm64-clap.zip">CLAP</a><span>Bitwig, Reaper</span></li>
           </ul>
         </div>
         <div class="dl-card">
           <h3>Intel</h3>
           <p class="arch">x86_64</p>
           <ul>
-            <li><a href="downloads/Junglizer-v0.9.1-beta.2-x86_64-component.zip">AUv2</a><span>Logic Pro, GarageBand</span></li>
-            <li><a href="downloads/Junglizer-v0.9.1-beta.2-x86_64-vst3.zip">VST3</a><span>Ableton Live, Cubase, Studio One</span></li>
-            <li><a href="downloads/Junglizer-v0.9.1-beta.2-x86_64-clap.zip">CLAP</a><span>Bitwig, Reaper</span></li>
+            <li><a href="https://github.com/mrballistic/junglizer/releases/latest/download/Junglizer-macos-x86_64-component.zip">AUv2</a><span>Logic Pro, GarageBand</span></li>
+            <li><a href="https://github.com/mrballistic/junglizer/releases/latest/download/Junglizer-macos-x86_64-vst3.zip">VST3</a><span>Ableton Live, Cubase, Studio One</span></li>
+            <li><a href="https://github.com/mrballistic/junglizer/releases/latest/download/Junglizer-macos-x86_64-clap.zip">CLAP</a><span>Bitwig, Reaper</span></li>
           </ul>
         </div>
       </div>
@@ -313,16 +313,16 @@
           <h3>Windows</h3>
           <p class="arch">x86_64 · unsigned</p>
           <ul>
-            <li><a href="downloads/Junglizer-v0.9.1-beta.2-windows-x86_64-vst3.zip">VST3</a><span>Ableton Live, Cubase, Studio One</span></li>
-            <li><a href="downloads/Junglizer-v0.9.1-beta.2-windows-x86_64-clap.zip">CLAP</a><span>Bitwig, Reaper</span></li>
+            <li><a href="https://github.com/mrballistic/junglizer/releases/latest/download/Junglizer-windows-x86_64-vst3.zip">VST3</a><span>Ableton Live, Cubase, Studio One</span></li>
+            <li><a href="https://github.com/mrballistic/junglizer/releases/latest/download/Junglizer-windows-x86_64-clap.zip">CLAP</a><span>Bitwig, Reaper</span></li>
           </ul>
         </div>
         <div class="dl-card">
           <h3>Linux</h3>
           <p class="arch">x86_64 · beta · unsigned</p>
           <ul>
-            <li><a href="downloads/Junglizer-v0.9.1-beta.2-linux-x86_64-vst3.zip">VST3</a><span>Bitwig, Reaper</span></li>
-            <li><a href="downloads/Junglizer-v0.9.1-beta.2-linux-x86_64-clap.zip">CLAP</a><span>Bitwig, Reaper</span></li>
+            <li><a href="https://github.com/mrballistic/junglizer/releases/latest/download/Junglizer-linux-x86_64-vst3.zip">VST3</a><span>Bitwig, Reaper</span></li>
+            <li><a href="https://github.com/mrballistic/junglizer/releases/latest/download/Junglizer-linux-x86_64-clap.zip">CLAP</a><span>Bitwig, Reaper</span></li>
           </ul>
         </div>
       </div>
@@ -343,7 +343,7 @@
       <p style="color:var(--muted);margin-top:16px">Restart your DAW so it finds the plugin. The amen is built in, so there’s nothing else to install.</p>
 
       <div class="note">
-        <strong>This is a beta.</strong> The macOS builds are signed and notarized by Apple, so they load without security prompts. The Windows and Linux builds are unsigned, so Windows may warn you before you unzip them, and Linux support is beta. SHA-256 checksums: <a href="downloads/SHA256-arm64.txt">arm64</a>, <a href="downloads/SHA256-x86_64.txt">Intel</a>, <a href="downloads/SHA256-windows.txt">Windows</a>, <a href="downloads/SHA256-linux.txt">Linux</a>. Fit to length currently changes pitch along with speed; pitch-preserving stretch is planned.
+        <strong>This is a beta.</strong> The macOS builds are signed and notarized by Apple, so they load without security prompts. The Windows and Linux builds are unsigned, so Windows may warn you before you unzip them, and Linux support is beta. SHA-256 checksums: <a href="https://github.com/mrballistic/junglizer/releases/latest/download/SHA256-macos-arm64.txt">arm64</a>, <a href="https://github.com/mrballistic/junglizer/releases/latest/download/SHA256-macos-x86_64.txt">Intel</a>, <a href="https://github.com/mrballistic/junglizer/releases/latest/download/SHA256-windows.txt">Windows</a>, <a href="https://github.com/mrballistic/junglizer/releases/latest/download/SHA256-linux.txt">Linux</a>. Fit to length currently changes pitch along with speed; pitch-preserving stretch is planned.
       </div>
     </div>
   </section>
@@ -354,6 +354,8 @@
     <span>Junglizer by <a href="https://mrballistic.com">mrballistic</a></span>
     <span>macOS · Windows · Linux · AUv2 · VST3 · CLAP</span>
     <nav class="legal" aria-label="Legal">
+      <a href="https://github.com/mrballistic/junglizer/blob/main/LICENSE">Free software under the GNU GPL v3</a>
+      <a href="https://github.com/mrballistic/junglizer">Source on GitHub</a>
       <a href="privacy/">Privacy</a>
       <button type="button" class="consent-open" data-consent-open>Cookie settings</button>
     </nav>
