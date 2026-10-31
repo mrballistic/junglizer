@@ -8,6 +8,10 @@ All notable changes to Junglizer are documented here. The format follows [Keep a
 - Logic Pro: breaks in Desktop, Documents or Downloads wouldn’t load (“Junglizer couldn’t read that file”), even when picked or dropped. The AU was marked sandbox-safe, so Logic ran it in a sandbox that blocks those folders; it’s now marked not sandbox-safe and Logic hosts it unsandboxed.
 - The AU reported version 1.0.0 to hosts; it now reports the real version (0.9.3).
 
+### Added
+- Delete (or Backspace) removes the selected placed slice; Cmd/Ctrl+Z undoes it. Locked slices stay.
+- Swap a placed slice: click it in the player, then click a source slice. The new slice keeps the placement’s length, speed, bits and retrigger, and Cmd/Ctrl+Z undoes the swap. Placing a new slice or pressing Esc ends the swap, so auditioning never rewrites a placement.
+
 ## [0.9.2-beta.3] - 2026-10-30
 
 ### Fixed
