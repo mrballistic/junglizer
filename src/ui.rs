@@ -29,6 +29,12 @@ const UNDO_HINT: &str = if cfg!(target_os = "macos") {
 } else {
     "Ctrl+Z"
 };
+/// The key that removes the selected placed slice, as macOS names it.
+const DELETE_KEY: &str = if cfg!(target_os = "macos") {
+    "Delete"
+} else {
+    "Delete or Backspace"
+};
 const SOURCE_COLORS: [Color32; 4] = [
     Color32::from_rgb(238, 151, 87),
     Color32::from_rgb(105, 205, 193),
@@ -65,6 +71,9 @@ pub struct JunglizerUi {
     selected_bar: usize,
     dragging_slice: Option<(usize, usize)>,
     dragging_marker: Option<usize>,
+    /// The placed slice a source-slice click swaps into: set by clicking a
+    /// placed slice in the player, cleared by placing, removing or Esc.
+    swap_slot: Option<u8>,
     message: Cow<'static, str>,
     export_path: Option<PathBuf>,
     wordmark: Option<egui::TextureHandle>,
@@ -118,6 +127,7 @@ impl JunglizerUi {
             selected_bar: 3,
             dragging_slice: None,
             dragging_marker: None,
+            swap_slot: None,
             message: INITIAL_MESSAGE.into(),
             export_path: None,
             wordmark: None,
@@ -164,6 +174,7 @@ impl JunglizerUi {
     }
 
     fn place(&mut self, slot: u8, context: &PluginContext<JunglizerParams>) {
+        self.swap_slot = None;
         if self.state.get().frozen || self.state.get().live_enabled {
             self.message = "Choose Edit under Phrase before editing the player.".into();
             return;
@@ -722,7 +733,14 @@ impl JunglizerUi {
                         && slot < item.start_slot + item.span_slots
                 }) {
                     self.selected_slot = Some(slot);
+                    self.swap_slot = Some(slot);
                     context.automate(P::EditSlot, f64::from(slot) / 31.0);
+                    if !self.state.get().frozen && !self.state.get().live_enabled {
+                        self.message = format!(
+                            "Click a source slice to swap it in, or press {DELETE_KEY} to remove it."
+                        )
+                        .into();
+                    }
                 } else {
                     self.place(slot, context);
                 }
@@ -991,8 +1009,87 @@ impl JunglizerUi {
         if removed {
             self.keep_undo(snapshot);
             self.selected_slot = None;
+            self.swap_slot = None;
         }
         removed
+    }
+
+    /// Delete or Backspace: removes the placed slice the inspector shows.
+    fn delete_selected(&mut self) {
+        let Some(slot) = self.selected_slot else {
+            return;
+        };
+        let state = self.state.get();
+        let Some(item) = state
+            .placements
+            .iter()
+            .find(|p| p.active && p.start_slot <= slot && slot < p.start_slot + p.span_slots)
+            .copied()
+        else {
+            return;
+        };
+        if state.frozen || state.live_enabled {
+            self.message = "Choose Edit under Phrase before editing the player.".into();
+        } else if item.locked {
+            self.message = "Uncheck Lock before removing.".into();
+        } else if self.remove_placement(slot) {
+            self.message = format!(
+                "Removed {}:{:02}. {UNDO_HINT} undoes it.",
+                item.source_loop + 1,
+                item.source_slice + 1
+            )
+            .into();
+        }
+    }
+
+    /// Puts source slice `source_slice` of `source_loop` into the unlocked
+    /// placement covering `slot`, keeping its length and sound. Undoable.
+    fn swap_into(&mut self, slot: u8, source_loop: usize, source_slice: usize) -> bool {
+        let state = self.state.get();
+        if state.frozen || state.live_enabled {
+            return false;
+        }
+        let Some(old) = state
+            .placements
+            .iter()
+            .find(|p| p.active && p.start_slot <= slot && slot < p.start_slot + p.span_slots)
+            .copied()
+        else {
+            self.swap_slot = None;
+            return false;
+        };
+        if old.locked {
+            self.message = "Uncheck Lock before swapping this slice.".into();
+            return false;
+        }
+        if state.slice(source_loop, source_slice).is_none() {
+            self.message =
+                "This source slice is quiet or unavailable. Choose another slice.".into();
+            return false;
+        }
+        if (usize::from(old.source_loop), usize::from(old.source_slice))
+            == (source_loop, source_slice)
+        {
+            return false;
+        }
+        let snapshot = Undo::of(
+            state,
+            format!("Swap {}:{:02}", old.source_loop + 1, old.source_slice + 1),
+        );
+        let swapped = self.edit_placement(old, |p| {
+            p.source_loop = source_loop as u8;
+            p.source_slice = source_slice as u8;
+        });
+        if swapped {
+            self.keep_undo(snapshot);
+            self.message = format!(
+                "Swapped in {}:{:02}. {UNDO_HINT} undoes it.",
+                source_loop + 1,
+                source_slice + 1
+            )
+            .into();
+        }
+        swapped
     }
 
     /// Holds `snapshot` as the one undo, tied to the version just written.
@@ -1215,6 +1312,17 @@ impl EditorUi<JunglizerParams> for JunglizerUi {
                 .input(|i| i.modifiers.command && !i.modifiers.shift && i.key_pressed(egui::Key::Z))
         {
             self.undo();
+        }
+        if !self.confirm_open() && !text_field_focused(ui.ctx()) {
+            if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.swap_slot = None;
+            }
+            if ui.input(|i| {
+                (i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
+                    && !i.modifiers.any()
+            }) {
+                self.delete_selected();
+            }
         }
         self.drop_targets.clear();
         let (hovered_files, dropped_files) = ui
@@ -1906,6 +2014,11 @@ impl JunglizerUi {
                     self.selected_slice = i;
                     context.automate(P::EditSlice, i as f64 / 31.0);
                 }
+                if response.clicked()
+                    && let Some(slot) = self.swap_slot
+                {
+                    self.swap_into(slot, self.selected_loop, i);
+                }
                 if response.clicked() {
                     context
                         .params()
@@ -1920,7 +2033,9 @@ impl JunglizerUi {
                     context.automate(P::EditSlice, i as f64 / 31.0);
                     self.set_source_muted(context, active);
                 }
-                response.on_hover_text(if active {
+                response.on_hover_text(if active && self.swap_slot.is_some() {
+                    "Click to swap into the selected slice · Drag into player · Right-click to mute"
+                } else if active {
                     "Click to audition · Drag into player · Right-click to mute"
                 } else {
                     "Muted or quiet slice · Select and uncheck Mute to activate"
