@@ -973,3 +973,115 @@ fn a_blank_slot_offers_add_and_choose() {
     assert!(texts.iter().any(|t| t == "Choose…"), "{texts:?}");
     assert!(!texts.iter().any(|t| t == "Empty"), "{texts:?}");
 }
+
+/// Source slice buttons 03 and 05 (Break 3 is selected in "selected").
+const SOURCE_SLICE_THREE: Pos2 = Pos2::new(349.0, 252.0);
+const SOURCE_SLICE_FIVE: Pos2 = Pos2::new(618.0, 252.0);
+/// Player slots 4 (empty) and 11 (locked) in "selected"; slots are ~33.5 px wide.
+const SLOT_FOUR: Pos2 = Pos2::new(131.0, 430.0);
+const SLOT_ELEVEN: Pos2 = Pos2::new(366.0, 430.0);
+
+fn placement_at(editor: &JunglizerUi, slot: u8) -> Option<StepPlacement> {
+    editor
+        .state
+        .get()
+        .placements
+        .iter()
+        .find(|p| p.active && p.start_slot <= slot && slot < p.start_slot + p.span_slots)
+        .copied()
+}
+
+#[test]
+fn delete_or_backspace_removes_the_selected_slice_and_undo_restores_it() {
+    for key in [egui::Key::Delete, egui::Key::Backspace] {
+        let mut d = Driver::new("selected");
+        let before = d.editor.state.get().placements;
+        d.click(SLOT_SIX);
+        d.key(key, egui::Modifiers::NONE);
+        assert_eq!(placement_at(&d.editor, 5), None, "{key:?} didn't remove it");
+        d.key(egui::Key::Z, egui::Modifiers::COMMAND);
+        assert_eq!(before, d.editor.state.get().placements);
+    }
+}
+
+#[test]
+fn delete_leaves_a_locked_slice_and_says_why() {
+    // "selected" starts on slot 11, which holds a locked slice.
+    let mut d = Driver::new("selected");
+    let before = d.editor.state.get().placements;
+    d.key(egui::Key::Delete, egui::Modifiers::NONE);
+    assert_eq!(before, d.editor.state.get().placements);
+    assert_eq!(d.editor.message, "Uncheck Lock before removing.");
+}
+
+#[test]
+fn clicking_a_placed_slice_then_a_source_slice_swaps_it_and_keeps_its_settings() {
+    let mut d = Driver::new("selected");
+    let old = placement_at(&d.editor, 5).unwrap();
+    d.click(SLOT_SIX);
+    d.click(SOURCE_SLICE_FIVE);
+    let new = placement_at(&d.editor, 5).unwrap();
+    assert_eq!((new.source_loop, new.source_slice), (2, 4));
+    assert_eq!(
+        (
+            new.start_slot,
+            new.span_slots,
+            new.mode,
+            new.bit_depth,
+            new.repeats,
+            new.locked
+        ),
+        (
+            old.start_slot,
+            old.span_slots,
+            old.mode,
+            old.bit_depth,
+            old.repeats,
+            old.locked
+        )
+    );
+    // Still armed: another source slice swaps again.
+    d.click(SOURCE_SLICE_THREE);
+    assert_eq!(placement_at(&d.editor, 5).unwrap().source_slice, 2);
+    d.key(egui::Key::Z, egui::Modifiers::COMMAND);
+    assert_eq!(
+        (
+            placement_at(&d.editor, 5).unwrap().source_loop,
+            placement_at(&d.editor, 5).unwrap().source_slice
+        ),
+        (2, 4),
+        "undo puts back the slice from before the last swap"
+    );
+}
+
+#[test]
+fn a_source_click_after_placing_a_new_slice_only_auditions() {
+    let mut d = Driver::new("selected");
+    d.click(SLOT_SIX);
+    // Place 3:04 on empty slot 4, then audition another slice.
+    assert_eq!(placement_at(&d.editor, 3), None);
+    d.click(SLOT_FOUR);
+    assert!(placement_at(&d.editor, 3).is_some(), "placed on slot 4");
+    let placements = d.editor.state.get().placements;
+    d.click(SOURCE_SLICE_FIVE);
+    assert_eq!(placements, d.editor.state.get().placements);
+}
+
+#[test]
+fn escape_disarms_the_swap() {
+    let mut d = Driver::new("selected");
+    let old = placement_at(&d.editor, 5).unwrap();
+    d.click(SLOT_SIX);
+    d.key(egui::Key::Escape, egui::Modifiers::NONE);
+    d.click(SOURCE_SLICE_FIVE);
+    assert_eq!(placement_at(&d.editor, 5), Some(old));
+}
+
+#[test]
+fn a_locked_placed_slice_is_not_swapped() {
+    let mut d = Driver::new("selected");
+    let old = placement_at(&d.editor, 10).unwrap();
+    d.click(SLOT_ELEVEN);
+    d.click(SOURCE_SLICE_FIVE);
+    assert_eq!(placement_at(&d.editor, 10), Some(old));
+}
