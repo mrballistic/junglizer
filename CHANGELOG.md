@@ -2,7 +2,7 @@
 
 All notable changes to Junglizer are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [0.9.2-beta.3] - 2026-10-30
 
 ### Fixed
 - Logic Pro: choosing a break (Add…, Choose…, Relink…) crashed the plugin. The open panel no longer blocks, so it works when Logic hosts the plugin out of process.
@@ -42,5 +42,6 @@ The first beta, macOS only.
 - A Thin / Dry / Thicc crossfader with root-tuned 808 reinforcement, and an Output knob.
 - MIDI export of the phrase.
 
+[0.9.2-beta.3]: https://github.com/mrballistic/junglizer/releases/tag/v0.9.2-beta.3
 [0.9.1-beta.2]: https://github.com/mrballistic/junglizer/releases/tag/v0.9.1-beta.2
 [0.9.0-beta.1]: https://github.com/mrballistic/junglizer/releases/tag/v0.9.0-beta.1
