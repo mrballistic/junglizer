@@ -615,8 +615,14 @@ fn run_pending(inner: &Inner) {
 /// Loads one requested file. A panic anywhere in decoding or analysis
 /// becomes `Unreadable` for that request instead of killing the loader.
 fn load(path: &[u8], hash: u64, seq: u64, restore: bool) -> LoadOutcome {
-    std::panic::catch_unwind(|| load_unguarded(path, hash, seq, restore))
-        .unwrap_or(LoadOutcome::Unreadable)
+    truce_egui::debug_log!(
+        "junglizer loader start seq={seq} restore={restore} path={:?}",
+        String::from_utf8_lossy(path)
+    );
+    std::panic::catch_unwind(|| load_unguarded(path, hash, seq, restore)).unwrap_or_else(|_| {
+        truce_egui::debug_log!("junglizer loader panicked seq={seq}");
+        LoadOutcome::Unreadable
+    })
 }
 
 fn load_unguarded(path: &[u8], hash: u64, seq: u64, restore: bool) -> LoadOutcome {
@@ -668,7 +674,9 @@ fn load_unguarded(path: &[u8], hash: u64, seq: u64, restore: bool) -> LoadOutcom
         return LoadOutcome::Unreadable;
     }
     let path = Path::new(path);
-    match std::fs::metadata(path) {
+    let meta = std::fs::metadata(path);
+    truce_egui::debug_log!("junglizer loader metadata {path:?} restore={restore}: {meta:?}");
+    match meta {
         Ok(meta) if meta.is_file() => {}
         Ok(_) => return LoadOutcome::Unreadable,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -676,7 +684,17 @@ fn load_unguarded(path: &[u8], hash: u64, seq: u64, restore: bool) -> LoadOutcom
         }
         Err(_) => return LoadOutcome::Unreadable,
     }
-    let sample = match decode_file_capped(path, Some(MAX_BREAK_SECS)) {
+    #[cfg(feature = "debug-log")]
+    truce_egui::debug_log!(
+        "junglizer loader open {path:?}: {:?}",
+        std::fs::File::open(path).map(|_| "ok")
+    );
+    let decoded = decode_file_capped(path, Some(MAX_BREAK_SECS));
+    truce_egui::debug_log!(
+        "junglizer loader decode {path:?}: {:?}",
+        decoded.as_ref().map(|s| s.duration_secs())
+    );
+    let sample = match decoded {
         Ok(sample) => sample,
         Err(DecodeError::Missing) => return LoadOutcome::Missing,
         Err(DecodeError::TooLong) => return LoadOutcome::Refused(Refusal::TooLong),
