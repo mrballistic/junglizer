@@ -955,3 +955,21 @@ fn frozen_from_live_freezes_the_live_variation_and_keeps_locks() {
     );
     assert!(!params.live_variations.value());
 }
+
+#[test]
+fn a_blank_slot_offers_add_and_choose() {
+    let (mut editor, params, ctx) = fixture("default");
+    editor.state.update(|s| {
+        s.unload(1);
+    });
+    params.set_normalized(P::EditBreak.into(), 1.0 / 3.0);
+    editor.refresh_slot_audio();
+    let notice = editor.waveform_notice(1).unwrap();
+    assert!(notice.contains("Choose…"), "{notice}");
+    // The slot button says what a click does, and the controls offer the
+    // way back in where Unload was.
+    let texts = rendered_texts(&mut editor, &ctx);
+    assert!(texts.iter().any(|t| t == "Add…"), "{texts:?}");
+    assert!(texts.iter().any(|t| t == "Choose…"), "{texts:?}");
+    assert!(!texts.iter().any(|t| t == "Empty"), "{texts:?}");
+}

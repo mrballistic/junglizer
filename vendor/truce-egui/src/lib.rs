@@ -23,6 +23,7 @@
 // `renderer.rs` (egui-wgpu wrapper) is shared - it has both a
 // baseview-window and a raw-CAMetalLayer constructor.
 #[cfg(not(target_os = "ios"))]
+pub mod debug_log;
 pub mod editor;
 pub mod font;
 pub mod platform;

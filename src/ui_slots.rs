@@ -338,25 +338,42 @@ impl JunglizerUi {
         }
     }
 
-    /// Opens the file dialog and asks the library to load the chosen file.
-    pub(crate) fn choose_file(&mut self, slot: usize, mode: LoadMode) {
+    /// Opens the file dialog; [`Self::poll_pick`] loads the chosen file
+    /// once it closes. While one is open, another click does nothing.
+    pub(crate) fn choose_file(&mut self, ctx: &egui::Context, slot: usize, mode: LoadMode) {
         if !self.breaks_editable() {
             self.message = LOCKED_HINT.into();
             return;
         }
-        let Some(picked) = rfd::FileDialog::new()
-            .add_filter("Audio", AUDIO_EXTENSIONS)
-            .pick_file()
-        else {
+        if self.picking.is_some() {
+            return;
+        }
+        truce_egui::debug_log!("junglizer choose_file slot={slot} mode={mode:?}: opening dialog");
+        let pick = crate::file_picker::pick_audio_file(AUDIO_EXTENSIONS, ctx);
+        self.picking = Some((slot, mode, pick));
+        // Windows and Linux block in the dialog, so the file is ready now.
+        self.poll_pick();
+    }
+
+    /// Loads the file the dialog returned, once it has closed.
+    pub(crate) fn poll_pick(&mut self) {
+        let Some(done) = self.picking.as_ref().and_then(|(_, _, pick)| pick.take()) else {
             return;
         };
-        self.load_path(slot, picked, mode);
+        let Some((slot, mode, _)) = self.picking.take() else {
+            return;
+        };
+        truce_egui::debug_log!("junglizer poll_pick slot={slot} mode={mode:?}: {done:?}");
+        if let Some(path) = done {
+            self.load_path(slot, path, mode);
+        }
     }
 
     /// Asks the library to load `path` into `slot`. Shared by the file
     /// dialog and drops, so both refuse, report and handle the first-run
     /// prompt the same way.
     pub(crate) fn load_path(&mut self, slot: usize, path: PathBuf, mode: LoadMode) {
+        truce_egui::debug_log!("junglizer load_path slot={slot} mode={mode:?} path={path:?}");
         if !self.breaks_editable() {
             self.message = LOCKED_HINT.into();
             return;
@@ -452,6 +469,16 @@ impl JunglizerUi {
         dropped: &[egui::DroppedFile],
     ) {
         // The confirm dialog is modal: nothing under it takes a drop.
+        if !dropped.is_empty() {
+            truce_egui::debug_log!(
+                "junglizer drop: files={:?} confirm_open={} pos={:?} screen={:?} targets={:?}",
+                dropped.iter().map(|f| &f.path).collect::<Vec<_>>(),
+                self.confirm_open(),
+                ctx.input(|i| i.pointer.latest_pos()),
+                ctx.content_rect(),
+                self.drop_targets
+            );
+        }
         if (hovered.is_empty() && dropped.is_empty()) || self.confirm_open() {
             return;
         }
@@ -464,8 +491,14 @@ impl JunglizerUi {
             .rev()
             .find(|(rect, _)| rect.contains(pos))
         else {
+            if !dropped.is_empty() {
+                truce_egui::debug_log!("junglizer drop: no target under {pos:?}");
+            }
             return;
         };
+        if !dropped.is_empty() {
+            truce_egui::debug_log!("junglizer drop: target {target:?} rect {rect:?}");
+        }
         if !hovered.is_empty() {
             let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("drop-target"));
             // Muted while frozen or live, so it's clear the drop won't take.
@@ -614,7 +647,7 @@ impl JunglizerUi {
         context.automate(P::SourceSlices, f64::from(count - 1) / 31.0);
     }
 
-    /// The Break 1–4 buttons. A blank slot reads “Empty” and opens the file
+    /// The Break 1–4 buttons. A blank slot reads “Add…” and opens the file
     /// dialog.
     pub(crate) fn slot_row(&mut self, ui: &mut Ui, context: &PluginContext<JunglizerParams>) {
         if let Some(slot) = self.select_after_load.take() {
@@ -624,7 +657,7 @@ impl JunglizerUi {
         for (i, color) in SOURCE_COLORS.iter().enumerate() {
             let blank = self.state.get().slots[i].kind == SlotKind::Blank;
             let text = if blank {
-                egui::RichText::new("Empty").color(MUTED)
+                egui::RichText::new("Add…").color(INK)
             } else {
                 egui::RichText::new(format!("Break {}", i + 1)).color(*color)
             };
@@ -648,7 +681,7 @@ impl JunglizerUi {
             if response.clicked() {
                 self.select_break(i, context);
                 if blank {
-                    self.choose_file(i, LoadMode::Load);
+                    self.choose_file(ui.ctx(), i, LoadMode::Load);
                 }
             }
         }
@@ -661,6 +694,13 @@ impl JunglizerUi {
         let editable = self.breaks_editable();
         let status = self.slot_status(slot);
         if status == SlotStatus::Blank {
+            if ui
+                .add_enabled(editable, egui::Button::new("Choose…"))
+                .on_disabled_hover_text(LOCKED_HINT)
+                .clicked()
+            {
+                self.choose_file(ui.ctx(), slot, LoadMode::Load);
+            }
             return;
         }
         if ui
@@ -713,7 +753,7 @@ impl JunglizerUi {
                     .on_disabled_hover_text(LOCKED_HINT)
                     .clicked()
                 {
-                    self.choose_file(slot, LoadMode::Relink);
+                    self.choose_file(ui.ctx(), slot, LoadMode::Relink);
                 }
                 match status {
                     SlotStatus::Blocked => {
@@ -737,9 +777,14 @@ impl JunglizerUi {
     pub(crate) fn waveform_notice(&self, slot: usize) -> Option<String> {
         let path = self.state.get().slots[slot].path().unwrap_or_default();
         match self.slot_status(slot) {
-            SlotStatus::Blank => {
-                Some("This slot is empty. Click Empty to choose a WAV, AIFF or MP3.".into())
-            }
+            SlotStatus::Blank => Some(
+                if DROP_SUPPORTED {
+                    "This slot is empty. Use Choose…, or drop a WAV, AIFF or MP3 here."
+                } else {
+                    "This slot is empty. Use Choose… to add a WAV, AIFF or MP3."
+                }
+                .into(),
+            ),
             SlotStatus::Loading => Some(format!("Loading {}…", file_name(path))),
             SlotStatus::Missing => Some(format!(
                 "Can’t find {}. Use Relink… to find it.",
@@ -882,7 +927,7 @@ impl JunglizerUi {
                 .on_hover_text("Loads into Break 1 and clears Breaks 2 to 4.")
                 .clicked()
             {
-                self.choose_file(0, LoadMode::FirstRun);
+                self.choose_file(ui.ctx(), 0, LoadMode::FirstRun);
             }
             if ui
                 .place(keep_rect, egui::Button::new("Keep the amen"))
@@ -904,7 +949,7 @@ impl JunglizerUi {
                 .clicked()
             {
                 let (slot, mode) = self.empty_target_slot();
-                self.choose_file(slot, mode);
+                self.choose_file(ui.ctx(), slot, mode);
             }
             let at = Pos2::new(choose_rect.right() + 16.0 + restore_width / 2.0, row);
             let response = link(ui, at, restore, editable);
@@ -964,11 +1009,7 @@ impl JunglizerUi {
                 ),
                 "Replace",
             ),
-            None => (
-                "Unload this break? Its slices and placements in this project will be removed."
-                    .to_owned(),
-                "Unload",
-            ),
+            None => (self.unload_question(slot), "Unload"),
         };
         let response = modal.show(ctx, |ui| {
             apply_style(ui);
@@ -1013,12 +1054,56 @@ impl JunglizerUi {
             self.message = LOCKED_HINT.into();
             return;
         }
-        let mut unloaded = false;
-        self.state.update(|s| unloaded = s.unload(slot));
-        if unloaded {
+        let targets = self.unload_targets(slot);
+        let mut unloaded = Vec::new();
+        self.state.update(|s| {
+            unloaded = targets.iter().copied().filter(|&t| s.unload(t)).collect();
+        });
+        if !unloaded.is_empty() {
             self.refresh_slot_audio();
-            self.message = format!("Break {} unloaded.", slot + 1).into();
+            self.message = format!("{} unloaded.", break_list(&unloaded)).into();
         }
+    }
+
+    /// What Unload on `slot` clears: the slot itself and every slot still
+    /// holding the Junglizer amen. Other user breaks stay.
+    pub(crate) fn unload_targets(&self, slot: usize) -> Vec<usize> {
+        let state = self.state.get();
+        (0..state.slots.len())
+            .filter(|&s| s == slot || state.slots[s].kind == SlotKind::Builtin)
+            .collect()
+    }
+
+    /// The Unload dialog's question for `slot`, naming any amen breaks it
+    /// also clears.
+    pub(crate) fn unload_question(&self, slot: usize) -> String {
+        const REMOVED: &str = "Their slices and placements in this project will be removed.";
+        let targets = self.unload_targets(slot);
+        if targets.len() == 1 {
+            return "Unload this break? Its slices and placements in this project will be removed."
+                .to_owned();
+        }
+        if self.state.get().slots[slot].kind == SlotKind::Builtin {
+            return format!(
+                "Unload the Junglizer amen from {}? {REMOVED}",
+                break_list(&targets)
+            );
+        }
+        let amen: Vec<usize> = targets.into_iter().filter(|&s| s != slot).collect();
+        format!(
+            "Unload this break and the Junglizer amen in {}? {REMOVED}",
+            break_list(&amen)
+        )
+    }
+}
+
+/// “Break 3”, “Breaks 2 and 4” or “Breaks 1, 2 and 4” for 0-based `slots`.
+fn break_list(slots: &[usize]) -> String {
+    let names: Vec<String> = slots.iter().map(|s| (s + 1).to_string()).collect();
+    match names.as_slice() {
+        [] => String::new(),
+        [one] => format!("Break {one}"),
+        [rest @ .., last] => format!("Breaks {} and {last}", rest.join(", ")),
     }
 }
 
@@ -1131,7 +1216,7 @@ fn link(ui: &mut Ui, at: Pos2, text: &str, enabled: bool) -> egui::Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::edit_state::SlotKind;
+    use crate::edit_state::{SliceMarker, SlotKind};
     use crate::library::LoadedBreak;
     use crate::sample::StereoSample;
     use crate::tempo::{self, Refusal};
@@ -1851,6 +1936,85 @@ mod tests {
         });
         finish_pending(&mut editor, &loaded(60_828, 4));
         assert_eq!(editor.state.get().slots[1].path(), Some("/x/other.wav"));
+    }
+
+    /// An editor whose Breaks 1 and 3 are user files; 2 and 4 keep the amen.
+    fn editor_with_two_user_breaks() -> JunglizerUi {
+        let mut editor = JunglizerUi::new();
+        editor.state.update(|s| {
+            for slot in [0, 2] {
+                s.load_user(
+                    slot,
+                    "/x/mine 174.wav",
+                    60_828,
+                    4,
+                    &[SliceMarker::default()],
+                )
+                .unwrap();
+            }
+        });
+        editor.refresh_slot_audio();
+        editor
+    }
+
+    #[test]
+    fn unloading_a_user_break_also_clears_the_amen_but_not_other_user_breaks() {
+        let mut editor = editor_with_two_user_breaks();
+        editor.confirm_unload = Some(0);
+        editor.close_unload_modal(true);
+        assert_eq!(
+            editor.state.get().slots.map(|x| x.kind),
+            [
+                SlotKind::Blank,
+                SlotKind::Blank,
+                SlotKind::User,
+                SlotKind::Blank
+            ]
+        );
+        assert_eq!(editor.message, "Breaks 1, 2 and 4 unloaded.");
+    }
+
+    #[test]
+    fn unloading_an_amen_break_clears_every_amen_break() {
+        let mut editor = editor_with_two_user_breaks();
+        editor.confirm_unload = Some(3);
+        editor.close_unload_modal(true);
+        assert_eq!(
+            editor.state.get().slots.map(|x| x.kind),
+            [
+                SlotKind::User,
+                SlotKind::Blank,
+                SlotKind::User,
+                SlotKind::Blank
+            ]
+        );
+        assert_eq!(editor.message, "Breaks 2 and 4 unloaded.");
+    }
+
+    #[test]
+    fn unloading_the_only_break_left_names_just_that_break() {
+        let mut editor = editor_with_two_user_breaks();
+        editor.state.update(|s| {
+            s.unload(1);
+            s.unload(3);
+        });
+        editor.confirm_unload = Some(2);
+        editor.close_unload_modal(true);
+        assert_eq!(editor.message, "Break 3 unloaded.");
+        assert_eq!(editor.state.get().slots[0].kind, SlotKind::User);
+    }
+
+    #[test]
+    fn the_unload_question_names_the_amen_breaks_it_also_clears() {
+        let editor = editor_with_two_user_breaks();
+        assert_eq!(
+            editor.unload_question(0),
+            "Unload this break and the Junglizer amen in Breaks 2 and 4? Their slices and placements in this project will be removed."
+        );
+        assert_eq!(
+            editor.unload_question(1),
+            "Unload the Junglizer amen from Breaks 2 and 4? Their slices and placements in this project will be removed."
+        );
     }
 
     #[test]

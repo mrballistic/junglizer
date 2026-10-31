@@ -2,6 +2,16 @@
 
 All notable changes to Junglizer are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+- Logic Pro: choosing a break (Add…, Choose…, Relink…) crashed the plugin. The open panel no longer blocks, so it works when Logic hosts the plugin out of process.
+- macOS: dropped files landed at the wrong height and were ignored, so drag and drop never loaded a break.
+
+### Changed
+- **Unload** also clears every slot still holding the Junglizer amen; other user breaks stay. The confirmation names the breaks it removes.
+- A blank slot’s button reads **Add…** instead of “Empty”, and a selected blank break shows a **Choose…** button.
+
 ## [0.9.1-beta.2] - 2026-10-27
 
 ### Added

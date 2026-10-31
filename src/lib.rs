@@ -2,6 +2,7 @@ use truce::prelude::*;
 
 mod decode;
 pub mod edit_state;
+mod file_picker;
 mod library;
 mod live;
 mod midi;

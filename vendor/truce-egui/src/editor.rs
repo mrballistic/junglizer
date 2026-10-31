@@ -1105,6 +1105,10 @@ impl<P: Params + ?Sized + 'static> WindowHandler for EguiWindowHandler<P> {
                             let pos = egui::pos2(position.x as f32, position.y as f32);
                             self.last_cursor_pos = pos;
                             self.pending_events.push(egui::Event::PointerMoved(pos));
+                            crate::debug_log!(
+                                "drag over pos={pos:?} size={:?} data={data:?}",
+                                self.size
+                            );
                             if let baseview::DropData::Files(paths) = data {
                                 self.hovered_files = paths
                                     .into_iter()
@@ -1121,6 +1125,7 @@ impl<P: Params + ?Sized + 'static> WindowHandler for EguiWindowHandler<P> {
                         }
                         // junglizer patch: file drop
                         DragLeft => {
+                            crate::debug_log!("drag left");
                             self.hovered_files.clear();
                             // Also queues a repaint so the hover state clears.
                             self.pending_events.push(egui::Event::PointerGone);
@@ -1138,6 +1143,10 @@ impl<P: Params + ?Sized + 'static> WindowHandler for EguiWindowHandler<P> {
                             self.last_cursor_pos = pos;
                             self.pending_events.push(egui::Event::PointerMoved(pos));
                             self.hovered_files.clear();
+                            crate::debug_log!(
+                                "drag dropped pos={pos:?} size={:?} data={data:?}",
+                                self.size
+                            );
                             if let baseview::DropData::Files(paths) = data {
                                 self.dropped_files.extend(paths.into_iter().map(|p| {
                                     egui::DroppedFile {
@@ -1317,6 +1326,7 @@ impl<P: Params + ?Sized + 'static> WindowHandler for EguiWindowHandler<P> {
                     .or_else(|| e.downcast_ref::<String>().cloned())
                     .unwrap_or_else(|| "unknown panic".to_string());
                 log::error!("egui on_event panic swallowed: {msg}");
+                crate::debug_log!("on_event panic swallowed: {msg}");
                 EventStatus::Ignored
             }
         }
