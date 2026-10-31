@@ -105,3 +105,7 @@ priority = -1
 level = "warn"
 priority = 0
 check-cfg = ['cfg(feature, values("cargo-clippy"))']
+
+# junglizer patch: debug logging (off by default, never shipped)
+[features]
+debug-log = []

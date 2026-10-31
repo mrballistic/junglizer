@@ -43,6 +43,8 @@ pub struct JunglizerUi {
     /// Reaches the shared `Library`; set when the editor opens or draws.
     params: Option<Arc<JunglizerParams>>,
     pending: PendingLoad,
+    /// The open file dialog and the slot and mode it loads into.
+    picking: Option<(usize, ui_slots::LoadMode, crate::file_picker::Pick)>,
     /// Selects this slot (and syncs Source slices) on the next frame.
     select_after_load: Option<usize>,
     confirm_unload: Option<usize>,
@@ -101,6 +103,7 @@ impl JunglizerUi {
             slot_audio: std::array::from_fn(SlotAudio::builtin),
             params: None,
             pending: PendingLoad::None,
+            picking: None,
             select_after_load: None,
             confirm_unload: None,
             unload_modal_fresh: false,
@@ -1200,6 +1203,7 @@ impl EditorUi<JunglizerParams> for JunglizerUi {
         if self.params.is_none() {
             self.params = Some(context.params().clone());
         }
+        self.poll_pick();
         self.poll_pending_load(ui.ctx());
         self.refresh_slot_audio();
         self.prune_undo();

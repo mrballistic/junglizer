@@ -2,6 +2,16 @@
 
 All notable changes to Junglizer are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.2-beta.3] - 2026-10-30
+
+### Fixed
+- Logic Pro: choosing a break (Add…, Choose…, Relink…) crashed the plugin. The open panel no longer blocks, so it works when Logic hosts the plugin out of process.
+- macOS: dropped files landed at the wrong height and were ignored, so drag and drop never loaded a break.
+
+### Changed
+- **Unload** also clears every slot still holding the Junglizer amen; other user breaks stay. The confirmation names the breaks it removes.
+- A blank slot’s button reads **Add…** instead of “Empty”, and a selected blank break shows a **Choose…** button.
+
 ## [0.9.1-beta.2] - 2026-10-27
 
 ### Added
@@ -32,5 +42,6 @@ The first beta, macOS only.
 - A Thin / Dry / Thicc crossfader with root-tuned 808 reinforcement, and an Output knob.
 - MIDI export of the phrase.
 
+[0.9.2-beta.3]: https://github.com/mrballistic/junglizer/releases/tag/v0.9.2-beta.3
 [0.9.1-beta.2]: https://github.com/mrballistic/junglizer/releases/tag/v0.9.1-beta.2
 [0.9.0-beta.1]: https://github.com/mrballistic/junglizer/releases/tag/v0.9.0-beta.1
