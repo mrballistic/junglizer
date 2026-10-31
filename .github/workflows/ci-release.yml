@@ -47,6 +47,10 @@ jobs:
         run: cargo install cargo-truce --version 6.3.0 --locked
       - name: Build AUv2, VST3, and CLAP
         run: cargo truce build --au2 --vst3 --clap
+      # cargo-truce marks the AU sandbox-safe (so Logic sandboxes it and breaks
+      # in Desktop, Documents and Downloads won't open) and versions it 1.0.0.
+      - name: Fix the AU Info.plist (not sandbox-safe, real version)
+        run: tools/release/patch_au_plist.sh target/bundles/Junglizer.component
       - name: Pack each format
         shell: bash
         run: |

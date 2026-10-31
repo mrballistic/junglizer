@@ -33,6 +33,13 @@ for format in component vst3 clap; do
   ditto -x -k "ci/Junglizer-macos-$arch-$format.zip" "unpacked/$format"
   bundle="unpacked/$format/Junglizer.$format"
   test -d "$bundle"
+  # A sandbox-safe AU can't open breaks in Desktop, Documents or Downloads
+  # in Logic; CI clears the flag (tools/release/patch_au_plist.sh).
+  if [ "$format" = component ] &&
+    [ "$(/usr/libexec/PlistBuddy -c 'Print :AudioComponents:0:sandboxSafe' "$bundle/Contents/Info.plist")" != false ]; then
+    echo "$bundle is marked sandboxSafe; refusing to sign" >&2
+    exit 1
+  fi
   echo "== sign $format"
   codesign --force --options runtime --timestamp --sign "$identity" "$bundle"
   codesign --verify --deep --strict "$bundle"

@@ -532,6 +532,7 @@ impl JunglizerUi {
         ) = (&mut self.pending, library)
             && let Some(posted) = library.request(*slot, path.as_bytes(), Purpose::Choose)
         {
+            truce_egui::debug_log!("junglizer post_pending slot={slot} seq={posted} path={path:?}");
             *seq = posted;
         }
     }
@@ -540,6 +541,9 @@ impl JunglizerUi {
     /// the loader has finished it.
     pub(crate) fn poll_pending_load(&mut self, ctx: &egui::Context) {
         let Some(library) = self.library() else {
+            if !matches!(self.pending, PendingLoad::None) {
+                truce_egui::debug_log!("junglizer poll_pending_load: no library yet");
+            }
             return;
         };
         library.collect_garbage();
@@ -559,6 +563,16 @@ impl JunglizerUi {
             .flatten();
         match result {
             Some(result) if result.seq == seq => {
+                truce_egui::debug_log!(
+                    "junglizer load result slot={slot} seq={seq} mode={mode:?} outcome={}",
+                    match &result.outcome {
+                        LoadOutcome::Loaded(_) => "Loaded".to_owned(),
+                        LoadOutcome::Refused(r) => format!("Refused({r:?})"),
+                        LoadOutcome::Unreadable => "Unreadable".to_owned(),
+                        LoadOutcome::Missing => "Missing".to_owned(),
+                        LoadOutcome::Blocked => "Blocked".to_owned(),
+                    }
+                );
                 let PendingLoad::Choosing { path, .. } =
                     std::mem::replace(&mut self.pending, PendingLoad::None)
                 else {
@@ -567,7 +581,10 @@ impl JunglizerUi {
                 self.commit_load(slot, &path, mode, expect, &result.outcome);
             }
             // A newer request replaced this one.
-            Some(result) if result.seq > seq => self.pending = PendingLoad::None,
+            Some(result) if result.seq > seq => {
+                truce_egui::debug_log!("junglizer load seq={seq} superseded by {}", result.seq);
+                self.pending = PendingLoad::None;
+            }
             _ => ctx.request_repaint_after(Duration::from_millis(50)),
         }
     }
@@ -581,6 +598,7 @@ impl JunglizerUi {
         outcome: &LoadOutcome,
     ) {
         if !self.breaks_editable() {
+            truce_egui::debug_log!("junglizer commit_load slot={slot}: breaks not editable");
             self.message = LOCKED_HINT.into();
             return;
         }
@@ -588,6 +606,7 @@ impl JunglizerUi {
         // slices placed from it), so the user never agreed to replace what
         // it holds now.
         if expect.changed_for(SlotSnapshot::of(self.state.get(), slot), mode) {
+            truce_egui::debug_log!("junglizer commit_load slot={slot}: slot changed while loading");
             self.message = format!(
                 "Break {} changed while loading. Drop or choose the file again to replace it.",
                 slot + 1
@@ -633,6 +652,7 @@ impl JunglizerUi {
             }
             Err(message) => self.message = message.into(),
         }
+        truce_egui::debug_log!("junglizer commit_load slot={slot}: {}", self.message);
     }
 
     /// Selects `slot` for editing and keeps Source slices in step with it.
