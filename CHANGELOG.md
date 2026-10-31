@@ -2,6 +2,12 @@
 
 All notable changes to Junglizer are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.3-beta.4] - 2026-10-30
+
+### Fixed
+- Logic Pro: breaks in Desktop, Documents or Downloads wouldn’t load (“Junglizer couldn’t read that file”), even when picked or dropped. The AU was marked sandbox-safe, so Logic ran it in a sandbox that blocks those folders; it’s now marked not sandbox-safe and Logic hosts it unsandboxed.
+- The AU reported version 1.0.0 to hosts; it now reports the real version (0.9.3).
+
 ## [0.9.2-beta.3] - 2026-10-30
 
 ### Fixed
@@ -42,6 +48,7 @@ The first beta, macOS only.
 - A Thin / Dry / Thicc crossfader with root-tuned 808 reinforcement, and an Output knob.
 - MIDI export of the phrase.
 
+[0.9.3-beta.4]: https://github.com/mrballistic/junglizer/releases/tag/v0.9.3-beta.4
 [0.9.2-beta.3]: https://github.com/mrballistic/junglizer/releases/tag/v0.9.2-beta.3
 [0.9.1-beta.2]: https://github.com/mrballistic/junglizer/releases/tag/v0.9.1-beta.2
 [0.9.0-beta.1]: https://github.com/mrballistic/junglizer/releases/tag/v0.9.0-beta.1

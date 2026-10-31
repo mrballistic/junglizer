@@ -22,7 +22,9 @@ cargo truce build --vst3 --clap         # Windows and Linux
 cargo truce validate --auval            # macOS only
 ```
 
-`cargo truce build` stages the format bundles in `target/bundles/`. `cargo truce install --au2 --user --no-build` installs the staged AU for the current user. This project keeps the plugin IDs in `truce.toml` unchanged; changing them would break project recall in hosts.
+`cargo truce build` stages the format bundles in `target/bundles/`. `cargo truce install --au2 --user --no-build` installs the staged AU for the current user, then run `tools/release/patch_au_plist.sh ~/Library/Audio/Plug-Ins/Components/Junglizer.component` on the installed copy (install rewrites the Info.plist, so patch after it). cargo-truce marks the AU sandbox-safe, so Logic runs it in a sandbox where breaks in Desktop, Documents and Downloads won’t open, and versions it 1.0.0; the script fixes both, and CI runs it before packing. This project keeps the plugin IDs in `truce.toml` unchanged; changing them would break project recall in hosts.
+
+To trace drops, the file dialog and loads, build with `--features debug-log`; it appends to `~/Library/Logs/Junglizer/debug.log`. Never ship that build.
 
 ## Architecture
 
